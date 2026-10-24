@@ -135,6 +135,93 @@
     ex: '`public` لتتمكن JVM من استدعائها، و`static` لأنها تُستدعى دون إنشاء كائن، و`void` لأنها لا تُعيد قيمة، و`String[] args` مصفوفة معاملات سطر الأوامر. عند التشغيل تُنشئ JVM أول إطار (frame) في الـStack لهذه الدالة.',
     bn: 'Il main deve restare breve: crea gli oggetti e delega il lavoro ai metodi delle classi.', bnAr: 'اجعل main قصيرة: تُنشئ الكائنات وتستدعي دوالها، ولا تضع فيها كل منطق البرنامج.',
   }));
+  // ── Costrutti dei livelli avanzati (Scanner, enum, collezioni, lambda, stream, file) ──
+  rule(/^\s*((?:public)\s+)?enum\s+(\w+)/, (m) => ({
+    t: 'Tipo enumerativo (enum)', ar: 'نوع تعدادي',
+    ex: `${c('enum ' + m[2])} يعرّف نوعاً لا يقبل إلا مجموعة ثابتة من القيم المسمّاة. كل ثابت كائن فريد يُنشأ مرة واحدة، ويمكن مقارنته بـ ${c('==')} واستخدامه في ${c('switch')}.`,
+    bn: 'Usa un enum invece di costanti int quando i valori formano un insieme chiuso.', bnAr: 'استخدم enum بدلاً من ثوابت int عندما تكون القيم مجموعة مغلقة.',
+  }));
+  rule(/^\s*[A-Z][A-Z0-9_]*(?:\([^)]*\))?\s*(?:,\s*[A-Z][A-Z0-9_]*(?:\([^)]*\))?\s*)*[;,]?\s*$/, (m) => ({
+    t: 'Costanti dell\'enum', ar: 'ثوابت التعداد',
+    ex: `هذه هي القيم الوحيدة الممكنة للتعداد: ${c(m[0].trim())}. إن كان بجانب الثابت قوسان فهما وسيطات تُمرَّر إلى مُنشئ التعداد.`,
+    bn: 'Le costanti di un enum si scrivono in MAIUSCOLO.', bnAr: 'ثوابت التعداد تُكتب بأحرف كبيرة.',
+  }));
+  rule(/^\s*(?:\}\s*)?case\s+(.+?)\s*->/, (m) => ({
+    t: 'case con freccia (switch moderno)', ar: 'حالة switch بالسهم',
+    ex: `إذا كانت القيمة ${c(m[1])} يُنفَّذ ما بعد السهم ${c('->')} فقط، دون سقوط إلى الحالات التالية ودون الحاجة إلى ${c('break')}.`,
+    bn: 'Preferisci le frecce: niente fall-through accidentali.', bnAr: 'فضّل الأسهم لتجنب السقوط غير المقصود.',
+  }));
+  rule(/^\s*try\s*\((.*)/, () => ({
+    t: 'try-with-resources', ar: 'try مع الموارد',
+    ex: `الموارد المعلنة بين قوسي ${c('try ( ... )')} (ملفات، Scanner) تُغلق تلقائياً في نهاية الكتلة، حتى لو حدث استثناء. لا حاجة إلى ${c('finally')} ولا إلى ${c('close()')} يدوياً.`,
+    bn: 'Apri file e Scanner sempre con try-with-resources.', bnAr: 'افتح الملفات والـScanner دائماً بـ try-with-resources.',
+  }));
+  rule(/new\s+Scanner\s*\(\s*System\.in\s*\)/, () => ({
+    t: 'Scanner (lettura da tastiera)', ar: 'قارئ الإدخال Scanner',
+    ex: `يُنشئ كائن ${c('Scanner')} في الـHeap يقرأ من ${c('System.in')} (لوحة المفاتيح). في المحاكي يأتي الإدخال من خانة «Input (stdin)». تذكّر إغلاقه في النهاية بـ ${c('close()')}.`,
+    bn: 'Crea un solo Scanner su System.in e chiudilo alla fine.', bnAr: 'أنشئ Scanner واحداً على System.in وأغلقه في النهاية.',
+  }));
+  rule(/\.(nextInt|nextDouble|nextLine|next|nextBoolean|nextLong|hasNextInt|hasNextLine|hasNext)\s*\(\s*\)/, (m) => ({
+    t: `Lettura con ${m[1]}()`, ar: 'قراءة إدخال',
+    ex: {
+      nextInt: `${c('nextInt()')} تقرأ العدد الصحيح التالي وتترك سطر الإدخال (Invio) في الذاكرة المؤقتة: إن استدعيت ${c('nextLine()')} بعدها مباشرة ستحصل على نص فارغ — فخ كلاسيكي!`,
+      nextDouble: `${c('nextDouble()')} تقرأ عدداً عشرياً. مع الإعداد الإيطالي (Locale) يُكتب بفاصلة مثل ${c('27,5')}.`,
+      nextLine: `${c('nextLine()')} تقرأ السطر كاملاً حتى زر Invio، بما فيه المسافات (مثل الاسم والكنية).`,
+      next: `${c('next()')} تقرأ الكلمة التالية فقط حتى أول مسافة.`,
+    }[m[1]] || `${c(m[1] + '()')} تفحص أو تقرأ القيمة التالية من الإدخال.`,
+    bn: 'Dopo nextInt() o nextDouble() consuma il fine riga con nextLine() prima di leggere un testo.', bnAr: 'بعد nextInt() أو nextDouble() استهلك نهاية السطر بـ nextLine() قبل قراءة نص.',
+  }));
+  rule(/new\s+(BufferedReader|FileReader|PrintWriter|FileWriter)\s*\(/, (m) => ({
+    t: m[1] === 'BufferedReader' || m[1] === 'FileReader' ? 'Lettura di un file' : 'Scrittura di un file', ar: m[1].includes('Read') ? 'قراءة ملف' : 'كتابة ملف',
+    ex: m[1].includes('Read')
+      ? `${c('BufferedReader')} يقرأ الملف سطراً بسطر بـ ${c('readLine()')} التي تُعيد ${c('null')} عند نهاية الملف. إن لم يوجد الملف يُرمى ${c('FileNotFoundException')} (استثناء مفحوص).`
+      : `${c('PrintWriter')} يكتب في الملف بـ ${c('print')} و ${c('println')} مثل System.out. البيانات لا تُكتب فعلياً إلا عند ${c('close()')} أو ${c('flush()')}.`,
+    bn: 'Gestisci IOException e chiudi sempre il file.', bnAr: 'عالج IOException وأغلق الملف دائماً.',
+  }));
+  rule(/^\s*\.(filter|map|mapToInt|mapToDouble|sorted|distinct|limit|collect|forEach|reduce|count|average|sum|max|min|orElse)\s*\(/, (m) => ({
+    t: `Operazione di stream: ${m[1]}`, ar: 'عملية على التدفق Stream',
+    ex: {
+      filter: `${c('filter')} تُبقي فقط العناصر التي يكون الشرط (اللامدا) صحيحاً لها.`,
+      map: `${c('map')} تحوّل كل عنصر إلى قيمة جديدة.`,
+      sorted: `${c('sorted')} ترتب العناصر (طبيعياً أو بالمقارن الممرَّر).`,
+      collect: `${c('collect')} عملية نهائية تجمع النتيجة في قائمة أو نص أو خريطة؛ عندها فقط يبدأ تنفيذ خط المعالجة.`,
+      forEach: `${c('forEach')} عملية نهائية تنفّذ إجراءً على كل عنصر.`,
+    }[m[1]] || `${c(m[1])} خطوة في خط معالجة الـStream: العمليات الوسيطة كسولة، والعملية النهائية تشغّل كل شيء.`,
+    bn: 'Una operazione per riga rende leggibile la pipeline.', bnAr: 'عملية واحدة في كل سطر تجعل خط المعالجة مقروءاً.',
+  }));
+  rule(/\.stream\s*\(\s*\)/, () => ({
+    t: 'Stream API', ar: 'واجهة التدفقات Stream',
+    ex: `${c('stream()')} يحوّل المجموعة إلى تدفق من العناصر نبني عليه سلسلة عمليات (filter، map، sorted...) تنتهي بعملية نهائية. الـStream لا يعدّل المجموعة الأصلية.`,
+    bn: 'Niente effetti collaterali dentro le operazioni dello stream.', bnAr: 'لا آثار جانبية داخل عمليات الـstream.',
+  }));
+  rule(/new\s+(ArrayList|LinkedList|HashMap|TreeMap|LinkedHashMap|HashSet|TreeSet|LinkedHashSet)\s*</, (m) => ({
+    t: `Collezione ${m[1]}`, ar: 'مجموعة (Collection)',
+    ex: /Map/.test(m[1])
+      ? `${c(m[1])} خريطة تربط كل مفتاح فريد بقيمة. ${c('put')} تضيف أو تستبدل، و ${c('get')} تُعيد القيمة أو ${c('null')}.${m[1] === 'HashMap' ? ' ترتيب العناصر يعتمد على الـhash وليس على ترتيب الإضافة.' : ''}`
+      : /Set/.test(m[1])
+        ? `${c(m[1])} مجموعة لا تقبل التكرار: ${c('add')} تُعيد false إن كان العنصر موجوداً.`
+        : `${c(m[1])} قائمة تكبر تلقائياً: ${c('add')} و ${c('get')} و ${c('remove')} و ${c('size()')}. المعامل الماسي ${c('<>')} يستنتج نوع العناصر.`,
+    bn: 'Dichiara la variabile con l\'interfaccia (List, Map, Set).', bnAr: 'صرّح عن المتغير بنوع الواجهة (List أو Map أو Set).',
+  }));
+  rule(/\.(merge|getOrDefault|computeIfAbsent|entrySet|keySet|putIfAbsent)\s*\(/, (m) => ({
+    t: `Metodo di Map: ${m[1]}`, ar: 'دالة على الخريطة',
+    ex: {
+      merge: `${c('merge(k, v, f)')} تضع v إن لم يوجد المفتاح، وإلا تدمج القيمة القديمة مع v بالدالة f (مثلاً ${c('Integer::sum')} للعدّ).`,
+      getOrDefault: `${c('getOrDefault(k, d)')} تُعيد قيمة المفتاح أو القيمة الافتراضية d إن لم يوجد، فتتجنب ${c('null')}.`,
+      entrySet: `${c('entrySet()')} تُعيد كل الأزواج مفتاح/قيمة للمرور عليها مع ${c('getKey()')} و ${c('getValue()')}.`,
+    }[m[1]] || `${c(m[1])} دالة مفيدة للتعامل مع مفاتيح الخريطة وقيمها.`,
+    bn: 'Usa getOrDefault e merge invece di controlli manuali su null.', bnAr: 'استخدم getOrDefault و merge بدلاً من فحص null يدوياً.',
+  }));
+  rule(/(\w+|\([^()]*\))\s*->/, (m) => ({
+    t: 'Espressione lambda', ar: 'تعبير لامدا',
+    ex: `${c(m[1] + ' -> ...')} دالة مجهولة قصيرة: على يسار السهم المعاملات وعلى يمينه النتيجة. تُستخدم مكان واجهة وظيفية (دالة مجردة واحدة) مثل Comparator أو Predicate. المتغيرات الخارجية فيها يجب ألا تتغير (effectively final).`,
+    bn: 'Lambda brevi; se servono più righe, estrai un metodo.', bnAr: 'لامدا قصيرة، وإن احتاجت أسطراً كثيرة فاستخرج دالة.',
+  }));
+  rule(/(\w+)::(\w+)/, (m) => ({
+    t: 'Method reference (::)', ar: 'مرجع إلى دالة',
+    ex: `${c(m[0])} صيغة مختصرة للامدا تستدعي الدالة ${c(m[2])}، مثل ${c('x -> x.' + m[2] + '()')} أو ${c(m[1] + '.' + m[2] + '(x)')}.`,
+    bn: 'Preferisci il method reference quando la lambda chiama solo un metodo.', bnAr: 'فضّل مرجع الدالة عندما تستدعي اللامدا دالة واحدة فقط.',
+  }));
   rule(/^\s*((?:public|private|protected|abstract|final|static)\s+)*(class|interface)\s+(\w+)(?:\s*<[^>]*>)?(?:\s+extends\s+([\w\s,<>]+?))?(?:\s+implements\s+([\w\s,<>]+?))?\s*\{?\s*$/, (m) => {
     const isI = m[2] === 'interface';
     const abs = /abstract/.test(m[1] || '');

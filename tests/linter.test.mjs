@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { analizza, applicaCorrezione, calcolaVoto, toCamel, toPascal, toUpperSnake } = require('../www/js/linter.js');
+const { spiega } = require('../www/js/explainer.js');
 
 const wrap = (body, fields = '') => `public class Main {\n${fields}\n    public static void main(String[] args) {\n${body}\n    }\n}\n`;
 const rules = (code) => analizza(code).map((f) => f.regola);
@@ -181,4 +182,23 @@ test('calcolo del voto in trentesimi', () => {
   assert.equal(v.voto, 26);
   assert.equal(v.lode, false);
   assert.ok(calcolaVoto([], { ok: false, error: { type: 'compile' } }).voto < 18);
+});
+
+test('risorsa non chiusa: Scanner e file senza close() né try-with-resources', () => {
+  const regole = (c) => analizza(c).filter((f) => f.regola === 'risorsa-non-chiusa').map((f) => f.line);
+  assert.deepEqual(regole('import java.util.Scanner;\npublic class A {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int x = sc.nextInt();\n    }\n}'), [4]);
+  assert.deepEqual(regole('public class A {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        sc.close();\n    }\n}'), []);
+  assert.deepEqual(regole('public class A {\n    public static void main(String[] args) {\n        try (BufferedReader in = new BufferedReader(new FileReader("a.txt"));\n             PrintWriter out = new PrintWriter(new FileWriter("b.txt"))) {\n            out.println(in.readLine());\n        } catch (IOException e) {\n            System.out.println(e.getMessage());\n        }\n    }\n}'), []);
+});
+
+test('spiegazioni riga per riga dei costrutti avanzati', () => {
+  const t = (l) => spiega(l).t;
+  assert.equal(t('enum Colore {'), 'Tipo enumerativo (enum)');
+  assert.equal(t('        Scanner sc = new Scanner(System.in);'), 'Scanner (lettura da tastiera)');
+  assert.equal(t('        int n = sc.nextInt();'), 'Lettura con nextInt()');
+  assert.equal(t('                .filter(c -> c.length() > 2)'), 'Operazione di stream: filter');
+  assert.equal(t('        voti.removeIf(v -> v < 18);'), 'Espressione lambda');
+  assert.equal(t('        try (PrintWriter out = new PrintWriter(new FileWriter("x.txt"))) {'), 'try-with-resources');
+  assert.equal(t('        Map<String, Integer> m = new HashMap<>();'), 'Collezione HashMap');
+  assert.match(spiega('        int n = sc.nextInt();').ex, /nextLine/);
 });

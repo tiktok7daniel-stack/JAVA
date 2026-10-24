@@ -1933,7 +1933,7 @@
 
   // ───────────────────────── Glossario ─────────────────────────
   const gl = { filter: 'Tutti', q: '', flash: false };
-  const CATS = ['Tutti', 'salvati', 'OOP', 'Memoria', 'Eccezioni', 'Buona Norma'];
+  const CATS = ['Tutti', 'salvati', 'Fondamenti', 'OOP', 'Memoria', 'Collezioni', 'Eccezioni', 'Buona Norma'];
 
   function glossItem(g) {
     return {

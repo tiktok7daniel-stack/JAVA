@@ -457,6 +457,30 @@
       });
     }
 
+    // ── 10: risorse (Scanner, file) aperte e mai chiuse ──
+    const RES_RE = /\b(\w+)\s*=\s*new\s+(Scanner|BufferedReader|PrintWriter|FileReader|FileWriter|BufferedWriter)\s*\(/g;
+    let rm;
+    while ((rm = RES_RE.exec(masked))) {
+      const nome = rm[1], tipo = rm[2];
+      // dichiarata tra le parentesi di un try-with-resources?
+      let depth = 0, inTry = false;
+      for (let k = rm.index - 1; k >= 0; k--) {
+        const ch = masked[k];
+        if (ch === ')') depth++;
+        else if (ch === '(') {
+          if (depth === 0) { inTry = /\btry\s*$/.test(masked.slice(Math.max(0, k - 10), k)); break; }
+          depth--;
+        } else if ((ch === '{' || ch === '}') && depth === 0) break;
+      }
+      if (inTry || new RegExp('\\b' + nome + '\\s*\\.\\s*close\\s*\\(').test(masked)) continue;
+      const line = masked.slice(0, rm.index).split('\n').length;
+      add({
+        line, severity: 'avviso', regola: 'risorsa-non-chiusa', titolo: `Risorsa ${tipo} non chiusa`,
+        it: `Lo ${tipo} «${nome}» viene aperto ma mai chiuso: le risorse (Scanner, file) vanno chiuse con ${nome}.close() oppure, meglio, dichiarate in un try-with-resources che le chiude automaticamente. Un PrintWriter non chiuso può lasciare il file vuoto.`,
+        ar: `المورد \`${tipo}\` باسم \`${nome}\` يُفتح ولا يُغلق أبداً: يجب إغلاق الموارد (Scanner والملفات) عبر \`${nome}.close()\`، أو الأفضل التصريح عنها داخل \`try-with-resources\` التي تغلقها تلقائياً. الـ\`PrintWriter\` غير المغلق قد يترك الملف فارغاً.`,
+      });
+    }
+
     // ── extra: if/for/while senza parentesi graffe ──
     mLines.forEach((L, li) => {
       const m = /^(\s*)(?:\}\s*)?(if|for|while|else if)\s*\(/.exec(L);

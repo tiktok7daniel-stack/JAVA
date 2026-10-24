@@ -8,16 +8,17 @@ CodeForge è un prototipo funzionante di un'app per studiare la **Programmazione
 
 | Area | Cosa fa |
 |---|---|
-| **Lezioni** | 5 moduli e 13 lezioni (Fondamenti, Controllo del flusso, OOP, Ereditarietà e Polimorfismo, Eccezioni), ognuna con un esercizio verificato automaticamente. |
+| **Percorso Accademico** | Albero delle competenze con **9 livelli (0–8) e 38 lezioni**, da «Livello 0: Matricola» a «Livello 8: Ingegnere Java 30 e Lode». Le lezioni si sbloccano in ordine (voto ≥ 18), oppure tutte insieme con la «Modalità libera». Il grado accademico attuale compare nell'intestazione. |
+| **Lezione in 5 fasi** | **Fase 1** Teoria guidata (frasi toccabili), analogia «Perché serve davvero? (المفهوم ببساطة)», esempio eseguibile passo-passo e regola di Buona Norma · **Fase 2** Micro-quiz con spiegazione IT/AR · **Fase 3** Costruisci il Codice (spazi da completare, suggerimenti, esecuzione del codice completato) · **Fase 4** Laboratorio nell'editor con verifiche automatiche (output, input, file, eccezioni, Buona Norma) · **Fase 5** Riepilogo e **voto della lezione in trentesimi** (quiz 10 + costruzione 10 + laboratorio 10). L'ultima lezione è una simulazione completa d'esame (scritto 40%, calcolatore 40%, orale 20%). |
 | **Tap-to-Understand** | Il bottom sheet mostra *Termine Tecnico (IT)*, *المعنى بالعربية*, *الشرح التفصيلي* e la *Regola di Buona Norma*. Si naviga con ◀ Precedente / Successivo ▶ (anche con le frecce della tastiera), c'è «Ascolta Pronuncia» in italiano (Web Speech API) e «★ Salva per l'Esame». |
-| **Editor Java** | Editor con colorazione della sintassi, numeri di riga, indentazione automatica e «Vista interattiva» che spiega ogni riga. |
-| **Simulatore JVM** | Interprete didattico di un sottoinsieme di Java: classi, costruttori, overloading, ereditarietà, classi astratte, interfacce, legame dinamico, array, `String`, `ArrayList`, `try-catch-finally`, `throw`/`throws`, eccezioni personalizzate, NPE e IndexOutOfBounds con stack trace reali. Gli errori di compilazione hanno una spiegazione in italiano e in arabo. |
+| **Editor Java** | Editor con colorazione della sintassi, numeri di riga, indentazione automatica e «Vista interattiva» che spiega ogni riga. Il pannello «Input (stdin) e File» fornisce l'input per `Scanner` e i file di testo virtuali; i file scritti dal programma compaiono nella console. |
+| **Simulatore JVM** | Interprete didattico di gran parte del Java dei corsi: classi, costruttori, overloading, ereditarietà, classi astratte, interfacce con metodi `default`, classi anonime, legame dinamico, `instanceof` con pattern, `enum` con attributi, `switch` con frecce e come espressione, array e matrici, ricorsione, `String`/`StringBuilder`, **`Scanner` con input (stdin)**, `ArrayList`/`LinkedList`/`HashMap`/`HashSet`/`TreeMap` (con lo stesso ordine di iterazione della JVM), `Comparable`/`Comparator`, **lambda, method reference e Stream API** (`filter`, `map`, `sorted`, `collect`, `groupingBy`…), `Optional`, **file di testo** (`BufferedReader`, `PrintWriter`, try-with-resources) su un file system virtuale, eccezioni checked/unchecked/personalizzate con stack trace reali e `printf` con Locale italiano. Gli errori di compilazione hanno una spiegazione in italiano e in arabo. |
 | **Passo-Passo (Debug)** | Controlli ⏮ ◀ ▶ ⏭ e riproduzione automatica. Per ogni passo evidenzia la riga attiva e mostra la **Memoria JVM** (frame sullo Stack, oggetti nello Heap con frecce dei riferimenti, campi `private` e oggetti eleggibili per il GC) con commento in italiano e in arabo. |
-| **Feedback del Professore** | Il linter «Buona Norma» controlla camelCase/PascalCase/UPPER_SNAKE_CASE, l'incapsulamento, `==` tra String, i confronti ridondanti con `true`/`false`, i catch vuoti o generici, le eccezioni usate per il flusso, i numeri magici, `break`/`continue` nei cicli e le graffe mancanti. Mostra il prima/dopo con **Applica Correzione** e calcola il voto in trentesimi (fino a **30 e Lode**). |
+| **Feedback del Professore** | Il linter «Buona Norma» controlla camelCase/PascalCase/UPPER_SNAKE_CASE, l'incapsulamento, `==` tra String, i confronti ridondanti con `true`/`false`, i catch vuoti o generici, le eccezioni usate per il flusso, i numeri magici, `break`/`continue` nei cicli, le graffe mancanti e le risorse (`Scanner`, file) non chiuse. Mostra il prima/dopo con **Applica Correzione** e calcola il voto in trentesimi (fino a **30 e Lode**). |
 | **Esame** | Caccia all'errore, «Cosa stampa questo codice?» (con verifica nel simulatore) e domande frequenti dell'orale con risposta modello, parole chiave e spiegazione in arabo. |
-| **Glossario** | 49 termini con ricerca, filtri (Tutti, ★ Da Ripassare, OOP, Memoria, Eccezioni, Buona Norma) e **flashcard** che si girano in 3D. |
+| **Glossario** | 69 termini con ricerca, filtri (Tutti, ★ Da Ripassare, Fondamenti, OOP, Memoria, Collezioni, Eccezioni, Buona Norma) e **flashcard** che si girano in 3D. |
 | **Identità e avvio** | Logo «Forge Spark» (parentesi di codice e scintilla della forgia), animazione di avvio con tracciamento del logo, esplosione di scintille, scritta animata e motto «Forgia il tuo codice. Capisci ogni riga.»; font incorporati. |
-| **Progressi** | XP, giorni consecutivi, lezioni completate ed esercizi superati, salvati in `localStorage`. |
+| **Progressi** | XP, giorni consecutivi, fase raggiunta, risposte, voto di ogni lezione e grado accademico, salvati in `localStorage` (restano dopo un aggiornamento dell'APK). |
 
 ## Avvio rapido
 
@@ -39,11 +40,20 @@ npm test             # node --test tests/*.test.mjs  (nessuna dipendenza)
 I test coprono:
 - tutte le regole del linter, comprese le correzioni automatiche;
 - il simulatore (output, eccezioni, errori di compilazione, trace di Stack e Heap);
-- la coerenza del programma didattico: il codice delle lezioni compila, le soluzioni superano le verifiche e le risposte d'esame coincidono con il simulatore.
+- la coerenza del percorso: per ognuna delle 38 lezioni l'esempio gira e rispetta la Buona Norma, i quiz sono validi, il codice completato di «Costruisci» produce l'output atteso, la soluzione del laboratorio supera le verifiche e il codice iniziale no;
+- le risposte d'esame coincidono con il simulatore.
+
+Confronto con una vera JVM (richiede `javac`/`java` nel PATH):
+
+```bash
+node tools/confronta-jdk.mjs          # tutte le lezioni, oppure: node tools/confronta-jdk.mjs l30 l35
+```
+
+Lo strumento compila ed esegue con il JDK (Locale it_IT) l'esempio, il codice completato e la soluzione di ogni lezione e confronta stdout, stderr e file scritti con il simulatore: attualmente **114 programmi su 114 sono identici**.
 
 ## APK Android
 
-L'APK già pronto si trova in **`dist/CodeForge.apk`** (Android 7.0+, circa 320 KB, funziona completamente offline).
+L'APK già pronto si trova in **`dist/CodeForge.apk`** (versione 2.0.0, Android 7.0+, circa 440 KB, funziona completamente offline).
 
 Per ricostruirlo non servono né Android SDK né Gradle, bastano JDK 17+ e Python 3:
 
@@ -77,14 +87,16 @@ www/
   js/linter.js             analizzatore «Buona Norma» con correzioni automatiche e voto /30
   js/explainer.js          spiegazione riga per riga e colorazione della sintassi
   js/verifica.js           verifica automatica degli esercizi
-  js/data/curriculum.js    i 5 moduli con lezioni, codice annotato ed esercizi
+  js/data/livelli/         livello-0.js … livello-8.js: le 38 lezioni in 5 fasi
+  js/data/percorso.js      riunisce i livelli, spazi di «Costruisci», esempi dell'editor
   js/data/glossary.js      glossario IT → AR
   js/data/esame.js         domande per la prova scritta e la prova orale
 tests/                     test con node:test
+tools/confronta-jdk.mjs    confronto del simulatore con una vera JVM
 apk/                       guscio Android nativo, script di build, versione
 dist/CodeForge.apk         APK firmato pronto da installare
 ```
 
 ## Limiti del simulatore
 
-Il simulatore è uno strumento didattico, non una vera JVM. I costrutti non supportati (Scanner/input da tastiera, lambda, enum, classi anonime, HashMap, thread…) producono il messaggio «Costrutto non supportato dal simulatore». Nel codice va usato `public static void main(String[] args)` con valori fissi.
+Il simulatore è uno strumento didattico, non una vera JVM. I costrutti fuori dal programma del corso (thread, `record`, reflection, rete, librerie non trattate nel corso…) producono il messaggio «Costrutto non supportato dal simulatore». L'input da tastiera arriva dalla casella «Input (stdin)»: se il programma chiede più dati di quelli forniti, il simulatore lo segnala.

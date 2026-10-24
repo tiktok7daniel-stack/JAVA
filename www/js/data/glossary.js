@@ -62,6 +62,29 @@
     { it: 'Catch vuoto', ar: 'كتلة catch فارغة', cat: 'Buona Norma', ex: 'كتلة catch لا تحتوي على أي معالجة، فتُخفي الخطأ تماماً. ممنوعة في قواعد البرمجة الجيدة.', code: 'catch (IOException e) { }  // ✗ da evitare' },
     { it: 'Indentazione', ar: 'الإزاحة', cat: 'Buona Norma', ex: 'إزاحة الكتل المتداخلة بمسافات ثابتة (عادة 4) لتوضيح بنية الكود. لا تؤثر على التنفيذ لكنها أساسية للقراءة والتقييم.', code: 'if (x > 0) {\n    stampa();\n}' },
     { it: 'equals vs ==', ar: 'المقارنة equals مقابل ==', cat: 'Buona Norma', ex: '== تقارن المراجع (هل هو نفس الكائن؟) بينما equals تقارن المحتوى. النصوص والكائنات تُقارن بـ equals.', code: '"ciao".equals(s)  // ✓\ns == "ciao"       // ✗' },
+    // ── Fondamenti ──
+    { it: 'Compilatore (javac)', ar: 'المترجم javac', cat: 'Fondamenti', ex: 'برنامج يحوّل الكود المصدري .java إلى bytecode في ملفات .class، ويكتشف أخطاء الترجمة (الصياغة والأنواع) قبل التشغيل.', code: 'javac Main.java   →   Main.class' },
+    { it: 'Bytecode', ar: 'الشيفرة الوسيطة', cat: 'Fondamenti', ex: 'تعليمات وسيطة مستقلة عن نظام التشغيل تنفّذها JVM. لهذا يعمل نفس ملف .class على Windows و Linux و Android: "اكتب مرة، شغّل في كل مكان".', code: 'java Main' },
+    { it: 'JVM (Java Virtual Machine)', ar: 'آلة جافا الافتراضية', cat: 'Fondamenti', ex: 'البرنامج الذي يحمّل الـbytecode وينفّذه ويدير الذاكرة (Stack و Heap و جامع القمامة).', code: '' },
+    { it: 'Casting', ar: 'تحويل النوع', cat: 'Fondamenti', ex: 'تحويل قيمة من نوع إلى آخر. التوسيع (int ← double) ضمني، والتضييق صريح بين قوسين وقد يفقد بيانات: (int) 3.9 يساوي 3.', code: 'double media = (double) somma / n;' },
+    { it: 'Divisione intera', ar: 'القسمة الصحيحة', cat: 'Fondamenti', ex: 'قسمة عددين صحيحين في Java تحذف الجزء العشري: 7 / 2 = 3. والمعامل % يُعيد الباقي: 7 % 2 = 1.', code: 'int q = 7 / 2;  // 3' },
+    { it: 'Operatore ternario', ar: 'المعامل الثلاثي', cat: 'Fondamenti', ex: 'تعبير شرط ? قيمة1 : قيمة2 يختار بين قيمتين في سطر واحد. مناسب للاختيارات البسيطة فقط.', code: 'String esito = voto >= 18 ? "Promosso" : "Respinto";' },
+    { it: 'Ricorsione', ar: 'الاستدعاء الذاتي', cat: 'Fondamenti', ex: 'دالة تستدعي نفسها على مشكلة أصغر حتى تصل إلى الحالة الأساسية. كل استدعاء يضيف إطاراً في الـStack، وبدون حالة أساسية يحدث StackOverflowError.', code: 'long fatt(int n) {\n    if (n <= 1) { return 1; }\n    return n * fatt(n - 1);\n}' },
+    { it: 'Scanner', ar: 'قارئ الإدخال', cat: 'Fondamenti', ex: 'صنف من java.util يقرأ الإدخال من لوحة المفاتيح: nextInt و nextDouble و nextLine. انتبه للسطر الفارغ بعد nextInt.', code: 'Scanner sc = new Scanner(System.in);\nint n = sc.nextInt();', bn: 'Chiudi lo Scanner con close() o usa try-with-resources.' },
+    { it: 'Enum (tipo enumerativo)', ar: 'التعداد', cat: 'Fondamenti', ex: 'نوع بقائمة مغلقة من الثوابت المسمّاة، كل منها كائن فريد. يمكن أن يملك خصائص ومُنشئاً ودوالاً.', code: 'enum Stagione { INVERNO, PRIMAVERA, ESTATE, AUTUNNO }' },
+    // ── Collezioni e programmazione funzionale ──
+    { it: 'ArrayList', ar: 'قائمة ديناميكية', cat: 'Collezioni', ex: 'قائمة تكبر تلقائياً، بعكس المصفوفة ذات الطول الثابت. الطول بـ size() وليس length.', code: 'List<String> nomi = new ArrayList<>();\nnomi.add("Anna");', bn: 'Dichiara la variabile come List<T>.' },
+    { it: 'Generics', ar: 'الأنواع العامة', cat: 'Collezioni', ex: 'معاملات نوع بين أقواس زاوية <T> تجعل المترجم يتحقق من نوع العناصر. لا تقبل الأنواع البدائية: List<Integer> وليس List<int>.', code: 'Map<String, Integer> voti = new HashMap<>();' },
+    { it: 'Autoboxing', ar: 'التغليف التلقائي', cat: 'Collezioni', ex: 'التحويل التلقائي بين النوع البدائي وصنفه المغلّف (int ↔ Integer). فك التغليف لقيمة null يرمي NullPointerException.', code: 'List<Integer> l = new ArrayList<>();\nl.add(5); // int → Integer' },
+    { it: 'HashMap', ar: 'خريطة التجزئة', cat: 'Collezioni', ex: 'تربط مفاتيح فريدة بقيم وتجدها بسرعة عبر hashCode. الترتيب غير مضمون. get تُعيد null للمفتاح الغائب.', code: 'conteggi.merge(parola, 1, Integer::sum);' },
+    { it: 'HashSet', ar: 'مجموعة التجزئة', cat: 'Collezioni', ex: 'مجموعة لا تقبل التكرار ولا تضمن الترتيب. تعتمد على equals و hashCode للعناصر.', code: 'Set<String> uniche = new HashSet<>(lista);' },
+    { it: 'Comparable / Comparator', ar: 'المقارنة الطبيعية والمقارن', cat: 'Collezioni', ex: 'Comparable يحدد الترتيب الطبيعي داخل الصنف (compareTo)، و Comparator كائن خارجي لترتيبات بديلة.', code: 'lista.sort(Comparator.comparing(Studente::getMedia).reversed());' },
+    { it: 'Espressione lambda', ar: 'تعبير لامدا', cat: 'Collezioni', ex: 'دالة مجهولة مختصرة (معاملات) -> نتيجة، تنفّذ واجهة وظيفية ذات دالة مجردة واحدة.', code: 'voti.removeIf(v -> v < 18);' },
+    { it: 'Stream API', ar: 'واجهة التدفقات', cat: 'Collezioni', ex: 'خط معالجة للبيانات: مصدر ثم عمليات وسيطة كسولة (filter، map، sorted) ثم عملية نهائية (collect، count، forEach).', code: 'nomi.stream().filter(n -> n.length() > 3).collect(Collectors.toList());' },
+    // ── Eccezioni e file ──
+    { it: 'try-with-resources', ar: 'try مع الموارد', cat: 'Eccezioni', ex: 'صيغة try (مورد) { } تغلق تلقائياً الموارد المعلنة بين القوسين في النهاية، حتى عند حدوث استثناء.', code: 'try (BufferedReader in = new BufferedReader(new FileReader("voti.txt"))) {\n    ...\n}' },
+    { it: 'IOException', ar: 'استثناء الإدخال والإخراج', cat: 'Eccezioni', ex: 'استثناء مفحوص تُرميه عمليات الملفات (مثل ملف غير موجود: FileNotFoundException). يجب التقاطه أو إعلانه بـ throws.', code: 'catch (IOException e) {\n    System.out.println("Errore: " + e.getMessage());\n}' },
+    { it: 'Risorsa non chiusa', ar: 'مورد غير مغلق', cat: 'Buona Norma', ex: 'فتح ملف أو Scanner دون إغلاقه يهدر الموارد، وقد يترك ملف PrintWriter فارغاً. الحل: close() أو try-with-resources.', code: 'try (PrintWriter out = new PrintWriter(new FileWriter("esito.txt"))) { ... }' },
   ];
 
   if (typeof module === 'object' && module.exports) module.exports = glossario;
