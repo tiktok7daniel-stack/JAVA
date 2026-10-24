@@ -3254,6 +3254,13 @@
       const isClass = t.k === 'name' && !this.findVar(t.name) && !(f.self && f.self.fields.has(t.name)) &&
         (this.classes.has(t.name) || STATIC_CLASSES.has(t.name) || KNOWN_LIB_TYPES.has(t.name) || t.name in BUILTIN_EXC);
       const label = exprStr(t) + '::' + name;
+      // Tipo annidato di libreria (Map.Entry::getKey): riferimento a metodo d'istanza non legato
+      if (t.k === 'field' && t.target.k === 'name' && t.target.name === 'Map' && t.name === 'Entry' && !this.findVar('Map')) {
+        return this.native((args) => {
+          if (!args.length) throw this.noMatch('Map.Entry', name, args, line);
+          return this.callOn(args[0], name, args.slice(1), { target: { k: 'name', name: 'x' } }, line);
+        }, -1, label);
+      }
       if (isClass) {
         const cls = t.name;
         if (name === 'new') return this.native((args) => this.newObject(cls, args, line), -1, label);

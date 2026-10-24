@@ -59,6 +59,10 @@ for (const liv of livelli) {
       if (jdk.compile) problemi.push('javac: ' + jdk.compile.split('\n').slice(0, 3).join(' | '));
       if (sim.error && sim.error.type !== 'limit') problemi.push('simulatore: ' + sim.error.msg + ' (riga ' + sim.error.line + ')');
       if (!jdk.compile && sim.text !== jdk.stdout) problemi.push(`stdout diverso\n      sim: ${JSON.stringify(sim.text)}\n      jdk: ${JSON.stringify(jdk.stdout)}`);
+      for (const [nome, cont] of Object.entries(sim.files || {})) {
+        if (files && files[nome] === cont) continue;
+        if (!jdk.compile && jdk.files[nome] !== cont) problemi.push(`file ${nome} diverso\n      sim: ${JSON.stringify(cont)}\n      jdk: ${JSON.stringify(jdk.files[nome])}`);
+      }
       const simErr = (sim.errText || '').split('\n')[0];
       if (!jdk.compile && simErr !== jdk.stderr) problemi.push(`stderr diverso\n      sim: ${JSON.stringify(simErr)}\n      jdk: ${JSON.stringify(jdk.stderr)}`);
       if (problemi.length) {
