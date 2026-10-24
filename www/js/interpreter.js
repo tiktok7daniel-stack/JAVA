@@ -23,6 +23,7 @@
   class ContinueSig { constructor(label) { this.label = label; } }
   class ReturnSig { constructor(value, line) { this.value = value; this.line = line; } }
   class ExitSig { constructor(code) { this.code = code; } }
+  class YieldSig { constructor(value) { this.value = value; } }
 
   const MAX_OPS = 400000;
   const MAX_STEPS = 2500;
@@ -35,8 +36,9 @@
   const KEYWORDS = new Set([...PRIMS, ...MODIFIERS, 'break', 'case', 'catch', 'class', 'continue', 'do', 'else',
     'enum', 'extends', 'finally', 'for', 'if', 'implements', 'import', 'instanceof', 'interface', 'new', 'null',
     'package', 'return', 'super', 'switch', 'this', 'throw', 'throws', 'true', 'false', 'try', 'while']);
-  const OPS = ['>>>=', '<<=', '>>=', '>>>', '...', '->', '::', '++', '--', '&&', '||', '==', '!=', '<=', '>=',
-    '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<', '>>'];
+  // '>>' e '>>>' non sono token: vengono ricomposti nel parser (così List<List<T>> funziona).
+  const OPS = ['>>>=', '<<=', '>>=', '...', '->', '::', '++', '--', '&&', '||', '==', '!=', '<=', '>=',
+    '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<'];
   const SINGLE = '{}()[];,.=<>!~?:+-*/&|^%@';
 
   function readEscape(src, j, line) {
@@ -134,7 +136,7 @@
       for (const o of OPS) if (src.startsWith(o, i)) { op = o; break; }
       if (!op && SINGLE.includes(c)) op = c;
       if (!op) throw new CompileError(`carattere inatteso '${c}'`, line, `رمز غير متوقع '${c}'`);
-      toks.push({ t: 'op', v: op, line });
+      toks.push({ t: 'op', v: op, line, i });
       i += op.length;
     }
     toks.push({ t: 'eof', v: 'fine del file', line });
@@ -149,7 +151,7 @@
   const ASSIGN = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=']);
 
   class Parser {
-    constructor(toks) { this.toks = toks; this.pos = 0; }
+    constructor(toks) { this.toks = toks; this.pos = 0; this.anon = []; this.typeParams = new Set(); }
     peek(k = 0) { return this.toks[Math.min(this.pos + k, this.toks.length - 1)]; }
     next() { const t = this.peek(); this.pos++; return t; }
     is(v, k = 0) { const t = this.peek(k); return (t.t === 'op' || t.t === 'kw') && t.v === v; }
@@ -187,7 +189,7 @@
         const mods = this.parseModifiers();
         types.push(...this.parseTypeDecl(mods));
       }
-      return types;
+      return types.concat(this.anon);
     }
 
     parseModifiers() {
@@ -217,6 +219,17 @@
       } while (depth > 0);
     }
 
+    /** <T, K extends Comparable<K>> : registra i nomi dei parametri di tipo. */
+    parseTypeParams() {
+      this.expect('<');
+      do {
+        this.parseModifiers();
+        this.typeParams.add(this.expectId());
+        if (this.accept('extends')) { this.parseType(); while (this.accept('&')) this.parseType(); }
+      } while (this.accept(','));
+      this.expect('>');
+    }
+
     skipTypeArgs() {
       let depth = 0;
       do {
@@ -234,10 +247,11 @@
       let kind;
       if (this.accept('class')) kind = 'class';
       else if (this.accept('interface')) kind = 'interface';
-      else if (this.is('enum') || (t.t === 'id' && t.v === 'record')) throw new Unsupported(t.v, t.line);
-      else throw new CompileError(`atteso 'class' o 'interface' ma trovato '${t.v}'`, t.line, `كان متوقعاً class أو interface لكن وُجد '${t.v}'`);
+      else if (this.accept('enum')) kind = 'enum';
+      else if (t.t === 'id' && t.v === 'record') throw new Unsupported('record', t.line);
+      else throw new CompileError(`atteso 'class', 'interface' o 'enum' ma trovato '${t.v}'`, t.line, `كان متوقعاً class أو interface أو enum لكن وُجد '${t.v}'`);
       const name = this.expectId();
-      if (this.is('<')) this.skipTypeArgs();
+      if (this.is('<')) this.parseTypeParams();
       let ext = null;
       const impls = [];
       if (this.accept('extends')) {
@@ -248,8 +262,26 @@
       }
       if (this.accept('implements')) { do impls.push(this.parseType().name); while (this.accept(',')); }
       this.expect('{');
-      const cls = { name, kind, ext, impls, mods, line: t.line, fields: [], methods: [], ctors: [], inits: [], staticInits: [] };
+      const cls = { name, kind, ext, impls, mods, line: t.line, fields: [], methods: [], ctors: [], inits: [], staticInits: [], enumConsts: [] };
       const out = [cls];
+      if (kind === 'enum') {
+        while (!this.is(';') && !this.is('}')) {
+          const cl = this.peek().line;
+          this.parseModifiers();
+          const cname = this.expectId();
+          const args = this.is('(') ? this.parseArgs() : [];
+          if (this.is('{')) throw new Unsupported('corpi specifici per le costanti enum', cl);
+          cls.enumConsts.push({ name: cname, args, line: cl });
+          if (!this.accept(',')) break;
+        }
+        this.accept(';');
+      }
+      this.parseClassBody(cls, out);
+      return out;
+    }
+
+    parseClassBody(cls, out) {
+      const name = cls.name, kind = cls.kind;
       while (!this.accept('}')) {
         this.eofCheck('}');
         if (this.accept(';')) continue;
@@ -257,12 +289,13 @@
         const m = this.parseModifiers();
         if (this.is('class') || this.is('interface') || this.is('enum')) { out.push(...this.parseTypeDecl(m)); continue; }
         if (this.is('{')) { const b = this.parseBlock(); (m.has('static') ? cls.staticInits : cls.inits).push(b); continue; }
-        if (this.is('<')) this.skipTypeArgs();
+        if (this.is('<')) this.parseTypeParams();
         if (this.peek().t === 'id' && this.peek().v === name && this.is('(', 1)) {
           this.pos++;
           const params = this.parseParams();
           const throwsL = this.parseThrows();
           const body = this.parseBlock();
+          if (kind === 'enum') m.add('private');
           cls.ctors.push({ name, params, throws: throwsL, body, mods: m, line: mline, cls: name, isCtor: true });
           continue;
         }
@@ -298,7 +331,6 @@
           this.expect(';');
         }
       }
-      return out;
     }
 
     parseParams() {
@@ -366,6 +398,12 @@
       const line = t.line;
       if (this.is('{')) return this.parseBlock();
       if (this.accept(';')) return { k: 'empty', line };
+      if (t.t === 'id' && t.v === 'yield' && !['=', '(', '.', '[', '++', '--', '+=', '-='].includes(this.peek(1).v)) {
+        this.pos++;
+        const e = this.parseExpr();
+        this.expect(';');
+        return { k: 'yield', e, line };
+      }
       if (t.t === 'id' && this.is(':', 1)) {
         this.pos += 2;
         const body = this.parseStatement();
@@ -479,8 +517,8 @@
       return { k: 'for', init, cond, update, body: this.parseStatement(), line };
     }
 
-    parseSwitch() {
-      const line = this.next().line;
+    parseSwitch(asExpr) {
+      const line = asExpr ? this.toks[this.pos - 1].line : this.next().line;
       this.expect('(');
       const disc = this.parseExpr();
       this.expect(')');
@@ -493,8 +531,10 @@
         if (this.accept('default')) labels = null;
         else {
           this.expect('case');
+          this.inCaseLabel = true;
           labels = [this.parseTernary()];
           while (this.accept(',')) labels.push(this.parseTernary());
+          this.inCaseLabel = false;
         }
         if (this.accept('->')) {
           let body;
@@ -509,12 +549,27 @@
         while (!this.is('case') && !this.is('default') && !this.is('}')) { this.eofCheck('}'); body.push(this.parseStatement()); }
         cases.push({ labels, body, line: cl });
       }
-      return { k: 'switch', disc, cases, line };
+      return { k: asExpr ? 'switchexpr' : 'switch', disc, cases, line };
     }
 
     parseTry() {
       const line = this.next().line;
-      if (this.is('(')) throw new Unsupported('try-with-resources', line);
+      let resources = null;
+      if (this.accept('(')) {
+        resources = [];
+        while (!this.accept(')')) {
+          this.eofCheck(')');
+          const rl = this.peek().line;
+          if (this.isLocalDecl()) {
+            this.parseModifiers();
+            const type = this.parseType();
+            const name = this.expectId();
+            this.expect('=');
+            resources.push({ type, name, init: this.parseExpr(), line: rl });
+          } else resources.push({ expr: this.parseExpr(), line: rl });
+          if (!this.accept(';')) { this.expect(')'); break; }
+        }
+      }
       const block = this.parseBlock();
       const catches = [];
       while (this.is('catch')) {
@@ -529,8 +584,8 @@
       }
       let fin = null, finLine = null;
       if (this.is('finally')) { finLine = this.next().line; fin = this.parseBlock(); }
-      if (!catches.length && !fin) throw new CompileError("'try' senza 'catch' o 'finally'", line, 'كتلة try يجب أن تتبعها catch أو finally على الأقل');
-      return { k: 'try', block, catches, fin, finLine, line };
+      if (!catches.length && !fin && !resources) throw new CompileError("'try' senza 'catch' o 'finally'", line, 'كتلة try يجب أن تتبعها catch أو finally على الأقل');
+      return { k: 'try', block, catches, fin, finLine, line, resources };
     }
 
     // ── Espressioni ──
@@ -565,10 +620,16 @@
     parseBinary(min) {
       let left = this.parseUnary();
       for (;;) {
-        const t = this.peek();
+        let t = this.peek();
+        let width = 1;
+        if (t.t === 'op' && t.v === '>' && this.is('>', 1) && this.peek(1).i === t.i + 1) {
+          const three = this.is('>', 2) && this.peek(2).i === t.i + 2;
+          width = three ? 3 : 2;
+          t = { ...t, v: three ? '>>>' : '>>' };
+        }
         const prec = (t.t === 'op' || t.v === 'instanceof') ? PREC[t.v] : undefined;
         if (!prec || prec < min) return left;
-        this.pos++;
+        this.pos += width;
         if (t.v === 'instanceof') {
           this.accept('final');
           const type = this.parseType();
@@ -645,7 +706,7 @@
         case 'str': return { k: 'lit', type: 'String', value: t.v, line };
         case 'char': return { k: 'lit', type: 'char', value: t.v, line };
         case 'id':
-          if (this.is('->')) throw new Unsupported('espressioni lambda', line);
+          if (this.is('->') && !this.inCaseLabel) { this.pos++; return this.parseLambdaBody([t.v], line); }
           if (this.is('(')) return { k: 'call', target: null, name: t.v, args: this.parseArgs(), line };
           return { k: 'name', name: t.v, line };
         case 'kw':
@@ -663,13 +724,13 @@
               return { k: 'superfield', name, line };
             }
             case 'new': return this.parseNew(line);
-            case 'switch': throw new Unsupported('espressioni switch', line);
+            case 'switch': return this.parseSwitch(true);
             default: break;
           }
           break;
         case 'op':
           if (t.v === '(') {
-            if (this.is(')', 0) && this.is('->', 1)) throw new Unsupported('espressioni lambda', line);
+            if (this.isLambdaAhead()) return this.parseLambdaParams(line);
             const e = this.parseExpr();
             this.expect(')');
             return { ...e, paren: true };
@@ -678,6 +739,35 @@
         default: break;
       }
       throw new CompileError(`espressione non valida: '${t.v}' inatteso`, line, `تعبير غير صالح: الرمز '${t.v}' غير متوقع هنا`);
+    }
+
+    /** Dopo '(' già consumata: la parentesi chiusa corrispondente è seguita da '->'? */
+    isLambdaAhead() {
+      let depth = 1, k = 0;
+      for (;;) {
+        const t = this.peek(k);
+        if (t.t === 'eof') return false;
+        if (t.v === '(' && t.t === 'op') depth++;
+        else if (t.v === ')' && t.t === 'op') { depth--; if (!depth) return this.is('->', k + 1); }
+        k++;
+      }
+    }
+
+    parseLambdaParams(line) {
+      const params = [];
+      while (!this.accept(')')) {
+        this.parseModifiers();
+        if (this.peek().t === 'id' && (this.is(',', 1) || this.is(')', 1))) params.push(this.next().v);
+        else { this.parseType(); params.push(this.expectId()); }
+        if (!this.accept(',')) { this.expect(')'); break; }
+      }
+      this.expect('->');
+      return this.parseLambdaBody(params, line);
+    }
+
+    parseLambdaBody(params, line) {
+      if (this.is('{')) return { k: 'lambda', params, block: this.parseBlock(), line };
+      return { k: 'lambda', params, expr: this.parseExpr(), line };
     }
 
     parseArgs() {
@@ -717,7 +807,16 @@
         return { k: 'newarray', elem: name, sizes, dims, init, line };
       }
       const args = this.parseArgs();
-      if (this.is('{')) throw new Unsupported('classi anonime', line);
+      if (this.is('{')) {
+        this.pos++;
+        const anonName = `Anonima$${this.anon.length + 1}`;
+        const cls = { name: anonName, kind: 'class', ext: null, impls: [], base: name, anon: true, mods: new Set(), line,
+          fields: [], methods: [], ctors: [], inits: [], staticInits: [], enumConsts: [] };
+        const nested = [];
+        this.parseClassBody(cls, nested);
+        this.anon.push(cls, ...nested);
+        return { k: 'new', cls: anonName, args, line, anon: true };
+      }
       return { k: 'new', cls: name, args, line };
     }
 
@@ -752,7 +851,9 @@
           this.checkLvalue(e, t);
           e = { k: 'postinc', op: t.v, e, line: t.line };
         } else if (this.is('::')) {
-          throw new Unsupported('riferimenti a metodo (::)', this.peek().line);
+          const line = this.next().line;
+          const name = this.accept('new') ? 'new' : this.expectId();
+          e = { k: 'mref', target: e, name, line };
         } else return e;
       }
     }
@@ -782,17 +883,33 @@
     InputMismatchException: 'NoSuchElementException', ConcurrentModificationException: 'RuntimeException',
     IOException: 'Exception', FileNotFoundException: 'IOException', InterruptedException: 'Exception',
     CloneNotSupportedException: 'Exception', StackOverflowError: 'Error', OutOfMemoryError: 'Error',
+    UncheckedIOException: 'RuntimeException', EmptyStackException: 'RuntimeException', NoSuchFileException: 'IOException',
   };
   const PKG = {
     IOException: 'java.io', FileNotFoundException: 'java.io', InputMismatchException: 'java.util',
+    EmptyStackException: 'java.util', NoSuchFileException: 'java.nio.file', UncheckedIOException: 'java.io',
     NoSuchElementException: 'java.util', ConcurrentModificationException: 'java.util',
   };
   const WRAP = { Integer: 'int', Long: 'long', Double: 'double', Float: 'double', Short: 'int', Byte: 'int', Boolean: 'boolean', Character: 'char' };
   const STATIC_CLASSES = new Set(['Math', 'System', 'Integer', 'Double', 'Long', 'Boolean', 'Character', 'String', 'Arrays',
-    'Objects', 'List', 'Thread', 'Float', 'Short', 'Byte']);
-  const UNSUPPORTED_JDK = new Set(['HashMap', 'HashSet', 'TreeMap', 'TreeSet', 'LinkedHashMap', 'Scanner', 'File', 'FileReader',
-    'FileWriter', 'BufferedReader', 'BufferedWriter', 'PrintWriter', 'Thread', 'Optional', 'Stack', 'Vector', 'Iterator',
-    'LocalDate', 'DecimalFormat', 'InputStreamReader', 'Map', 'Set', 'Queue', 'Deque', 'ArrayDeque', 'PriorityQueue']);
+    'Objects', 'List', 'Thread', 'Float', 'Short', 'Byte', 'Collections', 'Comparator', 'Collectors', 'Stream', 'IntStream',
+    'DoubleStream', 'Files', 'Paths', 'Path', 'Set', 'Map', 'Optional', 'Function', 'Entry']);
+  const MAP_CLASSES = { HashMap: 'hash', LinkedHashMap: 'linked', TreeMap: 'tree', Hashtable: 'hash' };
+  const SET_CLASSES = { HashSet: 'hash', LinkedHashSet: 'linked', TreeSet: 'tree' };
+  const COLLECTION_TYPES = {
+    list: ['List', 'ArrayList', 'LinkedList', 'Collection', 'Iterable', 'Vector', 'Stack', 'AbstractList'],
+    map: ['Map', 'HashMap', 'LinkedHashMap', 'TreeMap', 'SortedMap', 'Hashtable'],
+    set: ['Set', 'HashSet', 'LinkedHashSet', 'TreeSet', 'SortedSet', 'Collection', 'Iterable'],
+  };
+  const UNSUPPORTED_JDK = new Set(['Thread', 'LocalDate', 'LocalDateTime', 'DecimalFormat', 'InputStreamReader', 'Queue', 'Deque',
+    'ArrayDeque', 'PriorityQueue', 'Socket', 'URL', 'JFrame', 'JButton', 'ExecutorService']);
+  const KNOWN_LIB_TYPES = new Set(['List', 'ArrayList', 'LinkedList', 'Collection', 'Iterable', 'StringBuilder', 'StringBuffer',
+    'Random', 'CharSequence', 'Comparable', 'Number', 'Map', 'HashMap', 'LinkedHashMap', 'TreeMap', 'Set', 'HashSet',
+    'LinkedHashSet', 'TreeSet', 'Entry', 'Iterator', 'Scanner', 'File', 'FileReader', 'FileWriter', 'BufferedReader',
+    'BufferedWriter', 'PrintWriter', 'PrintStream', 'Comparator', 'Predicate', 'Function', 'Consumer', 'Supplier', 'BiFunction',
+    'BiConsumer', 'BinaryOperator', 'UnaryOperator', 'Runnable', 'Stream', 'IntStream', 'DoubleStream', 'Optional',
+    'OptionalInt', 'OptionalDouble', 'Collectors', 'Path', 'Paths', 'Files', 'AutoCloseable', 'Closeable', 'Vector', 'Stack',
+    'Hashtable', 'SortedMap', 'SortedSet', 'Object', 'Enum', 'IntBinaryOperator', 'ToIntFunction', 'Reader', 'Writer']);
 
   function kindOf(type) {
     if (!type) return 'ref';
@@ -907,11 +1024,21 @@
 
   // ───────────────────────── Interprete ─────────────────────────
   class Interp {
-    constructor(src, types) {
+    constructor(src, types, opts) {
       this.src = src;
+      const o = opts || {};
+      const input = String(o.input || '').replace(/\r\n?/g, '\n');
+      this.stdin = { text: input, pos: 0, isStdin: true, echoed: 0 };
+      this.fs = new Map(Object.entries(o.files || {}));
+      this.lastInput = null;
       this.lines = src.split('\n');
       this.classes = new Map();
       for (const c of types) {
+        if (c.anon) {
+          const base = types.find((x) => x.name === c.base);
+          if (base && base.kind === 'class') c.ext = c.base;
+          else c.impls = [c.base];
+        }
         if (this.classes.has(c.name)) throw new CompileError(`la classe ${c.name} è definita due volte`, c.line, `الصنف ${c.name} معرّف مرتين`);
         if (c.name in BUILTIN_EXC || c.name === 'String' || c.name === 'Object' || c.name === 'Math' || c.name === 'System') {
           throw new CompileError(`il nome ${c.name} è già usato da una classe della libreria standard`, c.line, `الاسم ${c.name} مستخدم مسبقاً لصنف في مكتبة Java القياسية`);
@@ -957,6 +1084,7 @@
         if (c) {
           if (c.ext) stack.push(c.ext);
           stack.push(...c.impls);
+          if (c.kind === 'enum') stack.push('Enum', 'Comparable');
         } else if (x in BUILTIN_EXC) stack.push(BUILTIN_EXC[x]);
         else if (x === 'ArrayList') stack.push('List', 'Collection', 'Iterable');
       }
@@ -1013,13 +1141,13 @@
           seen.add(x);
         }
         for (const m of c.methods) {
-          if (c.kind === 'class') {
+          if (c.kind === 'class' || c.kind === 'enum') {
             if (m.mods.has('abstract') && m.body) throw new CompileError(`il metodo abstract ${m.name}() non può avere un corpo`, m.line, `الدالة المجردة ${m.name}() لا يمكن أن تحتوي على جسم { }`);
             if (!m.mods.has('abstract') && !m.body && !m.mods.has('native')) throw new CompileError(`manca il corpo del metodo ${m.name}(): aggiungi { } oppure dichiaralo abstract`, m.line, `ينقص جسم الدالة ${m.name}(): أضف { } أو صرّح عنها كـ abstract`);
             if (m.mods.has('abstract') && !c.mods.has('abstract')) throw new CompileError(`${c.name} deve essere dichiarata abstract perché contiene il metodo astratto ${m.name}()`, c.line, `يجب التصريح عن الصنف ${c.name} كـ abstract لأنه يحتوي على الدالة المجردة ${m.name}()`);
           }
         }
-        if (c.kind === 'class' && !c.mods.has('abstract')) {
+        if ((c.kind === 'class' || c.kind === 'enum') && !c.mods.has('abstract')) {
           for (const sc of this.chain(c.name)) {
             for (const m of sc.methods) {
               if (m.body || m.mods.has('static')) continue;
@@ -1034,7 +1162,8 @@
         for (const m of c.methods) {
           if (!m.mods.has('@Override')) continue;
           const sup = this.chain(c.name).filter((k) => k !== c);
-          const ok = sup.some((k) => k.methods.some((x) => x.name === m.name && x.params.length === m.params.length)) ||
+          const libParent = this.chain(c.name).some((k) => k.impls.some((i) => !this.cls(i)) || (k.ext && !this.cls(k.ext)));
+          const ok = libParent || sup.some((k) => k.methods.some((x) => x.name === m.name && x.params.length === m.params.length)) ||
             (['toString', 'equals', 'hashCode', 'getMessage'].includes(m.name));
           if (!ok) throw new CompileError(`il metodo ${m.name}() non sovrascrive alcun metodo della superclasse (@Override errato)`, m.line, `الدالة ${m.name}() لا تعيد تعريف أي دالة من الصنف الأب، لذا الوسم @Override خاطئ`);
         }
@@ -1117,6 +1246,26 @@
         `لا يمكن الوصول إلى الحقل غير الساكن ${name} من سياق ساكن (static) مثل main: أنشئ كائناً أولاً ثم استخدمه.`);
     }
 
+    /** Variabili locali catturate da una classe anonima (e campi/statici della classe esterna). */
+    findCaptured(name) {
+      const f = this.top();
+      let env = f.self && f.self.env;
+      while (env) {
+        for (let i = env.scopes.length - 1; i >= 0; i--) {
+          const v = env.scopes[i].get(name);
+          if (v) return { ...v, kind: 'local' };
+        }
+        if (env.self) {
+          const fld = env.self.fields.get(name);
+          if (fld) return { ...fld, kind: 'field', ref: fld, owner: env.self };
+        }
+        const st = env.cls ? this.findStatic(env.cls.name, name) : null;
+        if (st) return { ...st, kind: 'static', ref: st };
+        env = env.self && env.self.env;
+      }
+      return null;
+    }
+
     readName(name, line) {
       const v = this.findVar(name);
       if (v) {
@@ -1130,6 +1279,11 @@
       }
       const sf = this.findStatic(f.cls ? f.cls.name : null, name);
       if (sf) return sf.value;
+      const cap = this.findCaptured(name);
+      if (cap) {
+        if (cap.value === undefined) throw this.uninit(name, line);
+        return cap.value;
+      }
       if (!f.self && f.cls && this.instanceFieldDeclared(f.cls.name, name)) throw this.staticCtx(name, line);
       if (this.classes.has(name) || STATIC_CLASSES.has(name) || name in BUILTIN_EXC) return { t: 'class', v: name };
       throw this.notFound(name, line);
@@ -1140,6 +1294,11 @@
       if (e.k === 'name') {
         const v = this.findVar(e.name);
         if (v) {
+          const fr = this.top();
+          if (fr.capturedDepth && fr.scopes.slice(0, fr.capturedDepth).some((sc) => sc.get(e.name) === v)) {
+            throw new CompileError(`la variabile locale ${e.name} usata in una lambda deve essere final o effettivamente final`, line,
+              `المتغير المحلي ${e.name} المستخدم داخل lambda يجب أن يكون final (أو لا تتغير قيمته بعد الإسناد الأول)، لذلك لا يمكن تعديله داخلها`);
+          }
           return {
             type: v.type,
             get: () => { if (v.value === undefined) throw this.uninit(e.name, line); return v.value; },
@@ -1158,6 +1317,13 @@
         }
         const sf = this.findStatic(f.cls ? f.cls.name : null, e.name);
         if (sf) return this.staticLv(sf, e.name, line);
+        const cap = this.findCaptured(e.name);
+        if (cap) {
+          if (cap.kind === 'field') return this.fieldLv(cap.owner, cap.ref, e.name, line);
+          if (cap.kind === 'static') return this.staticLv(cap.ref, e.name, line);
+          throw new CompileError(`la variabile locale ${e.name} usata in una classe interna deve essere final o effettivamente final`, line,
+            `المتغير المحلي ${e.name} المستخدم داخل صنف داخلي (anonymous) يجب أن يكون final ولا يمكن تعديله`);
+        }
         if (!f.self && f.cls && this.instanceFieldDeclared(f.cls.name, e.name)) throw this.staticCtx(e.name, line);
         throw this.notFound(e.name, line);
       }
@@ -1233,9 +1399,11 @@
           const o = v.v;
           if (o.kind === 'obj') return o.cls;
           if (o.kind === 'array') return typeStr(o.elem) + '[]';
-          if (o.kind === 'list') return 'ArrayList';
+          if (o.kind === 'list' || o.kind === 'map' || o.kind === 'set') return o.cls;
           if (o.kind === 'sb') return 'StringBuilder';
-          return o.kind;
+          const names = { lambda: 'lambda', scanner: 'Scanner', file: 'File', path: 'Path', reader: o.cls, writer: o.cls, stream: 'Stream',
+            optional: 'Optional', iter: 'Iterator', entry: 'Map.Entry', collector: 'Collector' };
+          return names[o.kind] || o.kind;
         }
         case 'class': return 'class ' + v.v;
         default: return v.t;
@@ -1245,6 +1413,10 @@
     coerce(v, type, line) {
       const k = kindOf(type);
       if (v.t === 'void') throw new CompileError("un metodo 'void' non restituisce alcun valore", line, 'الدالة من نوع void لا تُعيد أي قيمة، فلا يمكن استخدام نتيجتها');
+      if (v.t === 'null' && ['int', 'long', 'double', 'boolean', 'char'].includes(k)) {
+        throw this.jthrow('NullPointerException', 'Cannot unbox a null value (unboxing di null in un tipo primitivo)', line);
+      }
+      if (v.boxed && k === 'int') return mk.int(v.v);
       const bad = () => {
         throw new CompileError(`tipi incompatibili: ${this.typeOfVal(v)} non può essere convertito in ${typeStr(type)}`, line,
           `أنواع غير متوافقة: لا يمكن تحويل ${this.typeOfVal(v)} إلى ${typeStr(type)}`);
@@ -1283,7 +1455,7 @@
       if (k.startsWith('w:')) {
         if (v.t === 'null') return v;
         if (v.t !== k.slice(2)) bad();
-        return v;
+        return k === 'w:int' ? { ...v, boxed: true } : v;
       }
       if (v.t === 'null') return v;
       if (type.dims > 0) {
@@ -1291,6 +1463,11 @@
         return bad();
       }
       const tn = type.name;
+      if (v.t === 'ref' && v.v.kind === 'lambda') {
+        const c = this.cls(tn);
+        if (c && c.kind !== 'interface') bad();
+        return v;
+      }
       if (this.isRefTypeKnown(tn)) {
         if (v.t === 'ref' && v.v.kind === 'obj') {
           if (!this.isSubtype(v.v.cls, tn)) bad();
@@ -1298,6 +1475,8 @@
         }
         return bad();
       }
+      if (v.t === 'ref' && COLLECTION_TYPES[v.v.kind] && KNOWN_LIB_TYPES.has(tn) && !COLLECTION_TYPES[v.v.kind].includes(tn) &&
+        ['List', 'ArrayList', 'LinkedList', 'Map', 'HashMap', 'TreeMap', 'LinkedHashMap', 'Set', 'HashSet', 'TreeSet', 'LinkedHashSet'].includes(tn)) bad();
       if (v.t === 'String' && !['Object', 'CharSequence', 'Comparable', 'T', 'E'].includes(tn) && tn.length > 1) {
         if (/^(List|ArrayList|Collection|Iterable)$/.test(tn)) bad();
       }
@@ -1383,7 +1562,7 @@
         default: return String(v.v);
       }
     }
-    hashHex(o) { return o.addr.slice(1); }
+    hashHex(o) { return (o.addr || '@1b6d').slice(1); }
     objToString(o) {
       switch (o.kind) {
         case 'array': {
@@ -1393,12 +1572,23 @@
           return '[' + code + '@' + this.hashHex(o);
         }
         case 'list': return '[' + o.items.map((x) => this.toStr(x)).join(', ') + ']';
+        case 'set': return '[' + this.mapOrdered(o, 0).map((e) => this.toStr(e.k)).join(', ') + ']';
+        case 'map': return '{' + this.mapOrdered(o, 0).map((e) => this.toStr(e.k) + '=' + this.toStr(e.v)).join(', ') + '}';
+        case 'entry': return this.toStr(o.ent.k) + '=' + this.toStr(o.ent.v);
+        case 'lambda': return 'Main$$Lambda@' + (this.hashHex(o) || '1b6d');
+        case 'optional': return o.val ? `${o.prim === 'double' ? 'OptionalDouble' : o.prim === 'int' ? 'OptionalInt' : 'Optional'}[${this.toStr(o.val)}]` : `${o.prim === 'double' ? 'OptionalDouble' : o.prim === 'int' ? 'OptionalInt' : 'Optional'}.empty`;
+        case 'file': case 'path': return o.name;
+        case 'scanner': return 'java.util.Scanner[delimiters=\\p{javaWhitespace}+]';
+        case 'reader': case 'writer': return `java.io.${o.cls}@${this.hashHex(o)}`;
+        case 'iter': return 'java.util.Iterator@' + this.hashHex(o);
+        case 'stream': return 'java.util.stream.ReferencePipeline@1b6d3586';
         case 'sb': return o.s;
         case 'classobj': return 'class ' + o.name;
         case 'random': return 'java.util.Random@' + this.hashHex(o);
         case 'obj': {
           const m = this.findMethod(o.cls, 'toString', []);
           if (m) return this.toStr(this.invoke(m, o, [], 0));
+          if (o.enumName !== undefined) return o.enumName;
           return this.defaultToString(o);
         }
         default: return String(o);
@@ -1410,6 +1600,12 @@
     }
     javaEquals(a, b) {
       if (a.t === 'String') return b.t === 'String' && a.v === b.v;
+      if (a.t === 'ref' && b.t === 'ref' && a.v.kind === b.v.kind && ['list', 'set', 'map', 'entry'].includes(a.v.kind)) {
+        const k = a.v.kind;
+        if (k === 'list') return a.v.items.length === b.v.items.length && a.v.items.every((x, i) => this.javaEquals(x, b.v.items[i]));
+        if (k === 'entry') return this.javaEquals(a.v.ent.k, b.v.ent.k) && this.javaEquals(a.v.ent.v, b.v.ent.v);
+        return this.callOn(a, 'equals', [b], { target: { k: 'name', name: 'x' } }, 0).v;
+      }
       if (isNum(a) && isNum(b)) return a.v === b.v && a.t === b.t;
       if (a.t === 'boolean') return b.t === 'boolean' && a.v === b.v;
       if (a.t === 'null') return b.t === 'null';
@@ -1436,6 +1632,16 @@
           const fr = this.pushFrame(`${c.name}.<clinit>`, c, null, c.line);
           fr.hidden = true;
           try {
+            if (c.kind === 'enum') {
+              c.enumValues = [];
+              c.enumConsts.forEach((ec, ordinal) => {
+                const obj = this.alloc({ kind: 'obj', cls: c.name, fields: new Map(), enumName: ec.name, ordinal });
+                this.initFields(obj, c.name);
+                this.construct(c, obj, ec.args.map((a) => this.eval(a)), ec.line);
+                c.enumValues.push({ t: 'ref', v: obj });
+                this.statics.get(c.name).set(ec.name, { type: { name: c.name, dims: 0 }, value: { t: 'ref', v: obj }, final: true, access: 'public', decl: c.name, initDone: true });
+              });
+            }
             for (const f of c.fields) {
               if (!f.mods.has('static')) continue;
               const sf = this.statics.get(c.name).get(f.name);
@@ -1533,6 +1739,11 @@
       if (type.dims > 0) return v.t === 'ref' && v.v.kind === 'array' ? 0 : Infinity;
       const tn = type.name;
       if (tn === 'Object') return 20;
+      if (v.t === 'ref' && v.v.kind === 'lambda') {
+        const c = this.cls(tn);
+        return c ? (c.kind === 'interface' ? 2 : Infinity) : 4;
+      }
+      if (v.t === 'ref' && COLLECTION_TYPES[v.v.kind] && KNOWN_LIB_TYPES.has(tn)) return COLLECTION_TYPES[v.v.kind].includes(tn) ? 1 : Infinity;
       if (this.isRefTypeKnown(tn)) {
         if (v.t === 'ref' && v.v.kind === 'obj' && this.isSubtype(v.v.cls, tn)) return v.v.cls === tn ? 0 : 1;
         return Infinity;
@@ -1627,7 +1838,27 @@
         if (c.mods.has('abstract')) {
           throw new CompileError(`${clsName} è astratta; non può essere istanziata`, line, `الصنف ${clsName} مجرد (abstract) ولا يمكن إنشاء كائن منه مباشرة؛ أنشئ كائناً من صنف فرعي ملموس`);
         }
+        if (c.kind === 'enum') {
+          const first = (c.enumConsts[0] || { name: 'VALORE' }).name;
+          throw new CompileError(`gli enum (${clsName}) non possono essere istanziati con new: usa le costanti, es. ${clsName}.${first}`, line,
+            `لا يمكن إنشاء كائن من enum باستخدام new؛ استخدم الثوابت المعرّفة فيه مثل ${clsName}.${first}`);
+        }
         const obj = this.alloc({ kind: 'obj', cls: clsName, fields: new Map() });
+        if (c.anon) obj.env = this.captureEnv();
+        this.initFields(obj, clsName);
+        if (this.isThrowable(clsName)) obj.trace = this.stackTraceLines();
+        this.construct(c, obj, args, line);
+        return { t: 'ref', v: obj };
+      }
+      return this.newLibObject(clsName, args, line);
+    }
+
+    captureEnv() {
+      const f = this.top();
+      return { scopes: f.scopes.slice(), self: f.self, cls: f.cls };
+    }
+
+    initFields(obj, clsName) {
         for (let x = clsName; x; x = this.superOf(x)) {
           const xc = this.cls(x);
           if (xc) {
@@ -1642,10 +1873,9 @@
             obj.fields.set('message', { type: { name: 'String', dims: 0 }, value: NULL, access: 'private', decl: 'Throwable' });
           }
         }
-        if (this.isThrowable(clsName)) obj.trace = this.stackTraceLines();
-        this.construct(c, obj, args, line);
-        return { t: 'ref', v: obj };
-      }
+    }
+
+    newLibObject(clsName, args, line) {
       if (clsName in BUILTIN_EXC) {
         let msg = null;
         if (args[0]) {
@@ -1655,10 +1885,12 @@
         }
         return { t: 'ref', v: this.makeThrowable(clsName, msg) };
       }
+      const lib = this.newCollectionOrIo(clsName, args, line);
+      if (lib) return lib;
       switch (clsName) {
-        case 'ArrayList': case 'LinkedList': {
-          const items = args[0] && args[0].t === 'ref' && args[0].v.kind === 'list' ? args[0].v.items.slice() : [];
-          return { t: 'ref', v: this.alloc({ kind: 'list', cls: clsName, items }) };
+        case 'ArrayList': case 'LinkedList': case 'Vector': case 'Stack': {
+          const items = args[0] && args[0].t === 'ref' ? this.iterValues(args[0], line) : [];
+          return { t: 'ref', v: this.alloc({ kind: 'list', cls: clsName, items, mod: 0 }) };
         }
         case 'String':
           if (!args.length) return this.str('');
@@ -1672,10 +1904,7 @@
         default:
           if (WRAP[clsName] && args[0]) return this.coerce(args[0], { name: clsName, dims: 0 }, line);
       }
-      if (UNSUPPORTED_JDK.has(clsName)) {
-        if (clsName === 'Scanner') throw new Unsupported('Scanner (input da tastiera): nel simulatore usa valori fissi nel codice', line);
-        throw new Unsupported(`la classe ${clsName} della libreria Java`, line);
-      }
+      if (UNSUPPORTED_JDK.has(clsName)) throw new Unsupported(`la classe ${clsName} della libreria Java`, line);
       throw new CompileError(`impossibile trovare la classe ${clsName}`, line, `لا يمكن العثور على الصنف ${clsName}: تحقق من الاسم أو عرّف الصنف أولاً`);
     }
 
@@ -1691,7 +1920,7 @@
         if (ctor.mods.has('private') && this.curClassName() !== c.name) {
           throw new CompileError(`il costruttore ${c.name}() è private`, line, `المُنشئ ${c.name}() خاص (private) ولا يمكن استدعاؤه من خارج الصنف`);
         }
-      } else if (args.length) {
+      } else if (args.length && !c.anon) {
         throw new CompileError(`la classe ${c.name} ha solo il costruttore di default senza parametri`, line,
           `الصنف ${c.name} لا يحتوي إلا على المُنشئ الافتراضي بدون معاملات، لكنك مرّرت ${args.length} معاملات`);
       }
@@ -1709,7 +1938,7 @@
           stmts = stmts.slice(1);
         } else {
           const sup = c.ext;
-          const supArgs = explicit ? explicit.args.map((x) => this.eval(x)) : [];
+          const supArgs = explicit ? explicit.args.map((x) => this.eval(x)) : (c.anon && !ctor ? args : []);
           if (sup && this.cls(sup)) this.construct(this.cls(sup), obj, supArgs, explicit ? explicit.line : line);
           else if (sup && sup in BUILTIN_EXC) {
             const a0 = supArgs[0];
@@ -1750,6 +1979,7 @@
 
     exec(s) {
       this.tick(s.line);
+      this.lastInput = null;
       switch (s.k) {
         case 'empty': return;
         case 'block': return this.execBlock(s.stmts);
@@ -1824,6 +2054,7 @@
           throw new JavaThrow(v.v, s.line);
         }
         case 'try': return this.execTry(s);
+        case 'yield': throw new YieldSig(this.eval(s.e));
         default: throw new Unsupported('istruzione ' + s.k, s.line);
       }
     }
@@ -1851,25 +2082,42 @@
 
     execForeach(s) {
       const it = this.eval(s.iter);
-      if (it.t === 'null') throw this.jthrow('NullPointerException', `Cannot read the array length because "${exprStr(s.iter)}" is null`, s.line);
-      let items;
-      if (it.t === 'ref' && it.v.kind === 'array') items = it.v.items;
-      else if (it.t === 'ref' && it.v.kind === 'list') items = it.v.items.slice();
-      else throw new CompileError('il for-each richiede un array o una collezione', s.line, 'حلقة for-each تحتاج إلى مصفوفة أو مجموعة (Collection)');
-      for (let i = 0; i < items.length; i++) {
+      if (it.t === 'null') throw this.jthrow('NullPointerException', `Cannot iterate because "${exprStr(s.iter)}" is null`, s.line);
+      const o = it.t === 'ref' ? it.v : null;
+      const step = (v, i, n) => {
         this.tick(s.line);
         this.pushScope();
         try {
-          const v = this.coerce(items[i], s.type, s.line);
-          this.declare(s.name, s.type.name === 'var' ? this.inferType(v) : s.type, v, false, s.line);
-          this.record(s.line, 'foreach', { name: s.name, v, i, n: items.length });
+          const val = this.coerce(v, s.type, s.line);
+          this.declare(s.name, s.type.name === 'var' ? this.inferType(val) : s.type, val, false, s.line);
+          this.record(s.line, 'foreach', { name: s.name, v: val, i, n });
           try {
             this.execScoped(s.body);
           } catch (ex) {
-            if (ex instanceof BreakSig && (!ex.label || ex.label === s.label)) break;
+            if (ex instanceof BreakSig && (!ex.label || ex.label === s.label)) return 'break';
             if (!(ex instanceof ContinueSig && (!ex.label || ex.label === s.label))) throw ex;
           }
         } finally { this.popScope(); }
+        return null;
+      };
+      if (o && o.kind === 'list') {
+        // Come l'Iterator di ArrayList: hasNext() = cursor != size, next() controlla le modifiche.
+        const expected = o.mod || 0;
+        let cursor = 0;
+        while (cursor !== o.items.length) {
+          if ((o.mod || 0) !== expected) throw this.jthrow('ConcurrentModificationException', null, s.line);
+          if (cursor > o.items.length) break;
+          const v = o.items[cursor++];
+          if (step(v, cursor - 1, o.items.length) === 'break') break;
+        }
+      } else {
+        const items = this.iterValues(it, s.line);
+        const coll = o && o.kind === 'set' ? (o.view || o) : null;
+        const expected = coll ? coll.mod : 0;
+        for (let i = 0; i < items.length; i++) {
+          if (coll && coll.mod !== expected) throw this.jthrow('ConcurrentModificationException', null, s.line);
+          if (step(items[i], i, items.length) === 'break') break;
+        }
       }
       this.record(s.line, 'foreach-end');
     }
@@ -1882,8 +2130,7 @@
         const c = s.cases[i];
         if (!c.labels) continue;
         for (const l of c.labels) {
-          const lv = this.eval(l);
-          if ((v.t === 'String' && lv.t === 'String' && v.v === lv.v) || (isNum(v) && isNum(lv) && v.v === lv.v)) { start = i; break; }
+          if (this.switchMatch(v, l)) { start = i; break; }
         }
       }
       if (start < 0) start = s.cases.findIndex((c) => !c.labels);
@@ -1914,7 +2161,8 @@
       const depth = this.frames.length;
       const scopes = this.top().scopes.length;
       try {
-        this.execBlock(s.block.stmts);
+        if (s.resources) this.execResources(s);
+        else this.execBlock(s.block.stmts);
       } catch (ex) {
         this.frames.length = depth;
         this.top().scopes.length = scopes;
@@ -1934,7 +2182,7 @@
         } else pending = ex;
       }
       if (s.fin) {
-        if (pending && !(pending instanceof JavaThrow || pending instanceof ReturnSig || pending instanceof BreakSig || pending instanceof ContinueSig)) throw pending;
+        if (pending && !(pending instanceof JavaThrow || pending instanceof ReturnSig || pending instanceof BreakSig || pending instanceof ContinueSig || pending instanceof YieldSig)) throw pending;
         this.tick(s.finLine);
         this.record(s.finLine, 'finally', { pending: pending instanceof JavaThrow ? pending.obj : null });
         this.execBlock(s.fin.stmts);
@@ -1969,13 +2217,13 @@
         }
         const type = d.type.name === 'var' ? this.inferType(val) : d.type;
         this.declare(d.name, type, val, s.final, s.line);
-        this.record(s.line, 'decl', { name: d.name, type, val, init: d.init });
+        this.record(s.line, 'decl', { name: d.name, type, val, init: d.init, input: this.lastInput });
       }
     }
     isTypeUsable(t) {
       const n = t.name;
       if (PRIMS.has(n) || n === 'String' || n === 'var' || n === 'Object' || WRAP[n] || this.isRefTypeKnown(n)) return true;
-      if (/^(List|ArrayList|LinkedList|Collection|Iterable|StringBuilder|StringBuffer|Random|CharSequence|Comparable|Number)$/.test(n)) return true;
+      if (KNOWN_LIB_TYPES.has(n) || (this.typeParams && this.typeParams.has(n))) return true;
       if (UNSUPPORTED_JDK.has(n)) return true;
       if (n.length === 1) return true;
       return false;
@@ -2087,7 +2335,7 @@
           let r = false;
           if (v.t === 'ref' && v.v.kind === 'obj') r = this.isSubtype(v.v.cls, e.type.name);
           else if (v.t === 'String') r = ['String', 'Object', 'CharSequence', 'Comparable'].includes(e.type.name);
-          else if (v.t === 'ref' && v.v.kind === 'list') r = this.isSubtype('ArrayList', e.type.name);
+          else if (v.t === 'ref' && COLLECTION_TYPES[v.v.kind]) r = COLLECTION_TYPES[v.v.kind].includes(e.type.name) || e.type.name === 'Object';
           else if (v.t === 'ref' && v.v.kind === 'array') r = e.type.dims > 0 || e.type.name === 'Object';
           else if (isPrimVal(v)) throw new CompileError('instanceof non si applica ai tipi primitivi', e.line, 'لا يمكن استخدام instanceof مع الأنواع البدائية');
           if (r && e.bind) {
@@ -2098,6 +2346,9 @@
         }
         case 'ctorcall':
           throw new CompileError(`la chiamata a ${e.which}(...) deve essere la prima istruzione del costruttore`, e.line, `استدعاء ${e.which}(...) يجب أن يكون أول تعليمة في المُنشئ`);
+        case 'lambda': return this.evalLambda(e);
+        case 'mref': return this.evalMref(e);
+        case 'switchexpr': return this.evalSwitchExpr(e);
         default:
           throw new Unsupported('espressione ' + e.k, e.line);
       }
@@ -2141,6 +2392,9 @@
       }
       if (a.t === 'boolean' && b.t === 'boolean' && (op === '&' || op === '|' || op === '^')) {
         return mk.bool(op === '&' ? a.v && b.v : op === '|' ? a.v || b.v : a.v !== b.v);
+      }
+      if ((a.t === 'null' && isNum(b)) || (b.t === 'null' && isNum(a))) {
+        throw this.jthrow('NullPointerException', 'Cannot unbox a null value (unboxing di null)', line);
       }
       if (!isNum(a) || !isNum(b)) {
         throw new CompileError(`operatore ${op} non applicabile ai tipi ${this.typeOfVal(a)} e ${this.typeOfVal(b)}`, line,
@@ -2283,7 +2537,7 @@
         Boolean: { TRUE: mk.bool(true), FALSE: mk.bool(false) },
         System: { out: { t: 'stream', v: 'out' }, err: { t: 'stream', v: 'err' } },
       };
-      if (cls === 'System' && name === 'in') throw new Unsupported('System.in (input da tastiera)', line);
+      if (cls === 'System' && name === 'in') return { t: 'stream', v: 'in' };
       if (table[cls] && name in table[cls]) return table[cls][name];
       throw this.notFound(cls + '.' + name, line);
     }
@@ -2312,7 +2566,9 @@
       if (e.target.k === 'name' && tv.t === 'ref' && tv.v.kind === 'obj') {
         const st = this.staticTypeName(e.target);
         if (st && this.cls(st) && !this.chain(st).some((c) => c.methods.some((m) => m.name === e.name)) &&
-          !['toString', 'equals', 'hashCode', 'getClass', 'getMessage', 'printStackTrace'].includes(e.name)) {
+          !['toString', 'equals', 'hashCode', 'getClass', 'getMessage', 'printStackTrace'].includes(e.name) &&
+          !(this.cls(st).kind === 'enum' && ['name', 'ordinal', 'compareTo', 'getDeclaringClass'].includes(e.name)) &&
+          !this.chain(st).some((c) => c.impls.some((i) => !this.cls(i)))) {
           throw new CompileError(`metodo ${e.name}() non trovato nel tipo ${st} (tipo statico del riferimento ${e.target.name})`, line,
             `الدالة ${e.name}() غير موجودة في النوع ${st}: المُترجم ينظر إلى النوع المُصرَّح به للمرجع (النوع الساكن) وليس إلى نوع الكائن الفعلي؛ استخدم تحويلاً (cast) إن لزم`);
         }
@@ -2330,7 +2586,19 @@
       }
       const lex = f.cls ? f.cls.name : null;
       const m = lex ? this.findMethod(lex, e.name, args) : null;
-      if (!m && f.self && ['getClass', 'toString', 'hashCode', 'equals', 'getMessage', 'printStackTrace'].includes(e.name)) {
+      if (!m && f.self && f.self.env) {
+        for (let env = f.self.env; env; env = env.self && env.self.env) {
+          if (env.self) {
+            const om = this.findMethod(env.self.cls, e.name, args);
+            if (om) return this.invoke(om, om.mods.has('static') ? null : env.self, args, line);
+          }
+          if (env.cls) {
+            const sm = this.findMethod(env.cls.name, e.name, args);
+            if (sm && sm.mods.has('static')) return this.invoke(sm, null, args, line);
+          }
+        }
+      }
+      if (!m && f.self && ['getClass', 'toString', 'hashCode', 'equals', 'getMessage', 'printStackTrace', 'name', 'ordinal', 'compareTo'].includes(e.name)) {
         return this.callObj(f.self, e.name, args, line);
       }
       if (m) {
@@ -2367,13 +2635,29 @@
           throw this.jthrow('NullPointerException', `Cannot invoke "${st}.${name}()" because "${exprStr(e.target)}" is null`, line);
         }
         case 'class': return this.callStatic(tv.v, name, args, line);
-        case 'stream': return this.callStream(tv.v, name, args, line);
+        case 'stream':
+          if (tv.v === 'in') throw new Unsupported('System.in usato direttamente: leggi l\'input con new Scanner(System.in)', line);
+          return this.callStream(tv.v, name, args, line);
         case 'String': return this.callString(tv, name, args, line);
         case 'ref': {
           const o = tv.v;
           switch (o.kind) {
             case 'obj': return this.callObj(o, name, args, line);
-            case 'list': return this.callList(o, name, args, line);
+            case 'list': {
+              const r = this.callListExt(tv, name, args, line);
+              return r !== undefined ? r : this.callList(o, name, args, line);
+            }
+            case 'map': return this.callMap(tv, name, args, line);
+            case 'set': return this.callSet(tv, name, args, line);
+            case 'lambda': return this.callLambdaObj(tv, name, args, line);
+            case 'iter': return this.callIter(o, name, args, line);
+            case 'entry': return this.callEntry(o, name, args, line);
+            case 'scanner': return this.callScanner(o, name, args, line);
+            case 'file': case 'path': return this.callFile(o, name, args, line);
+            case 'reader': return this.callReader(o, name, args, line);
+            case 'writer': return this.callWriter(o, name, args, line);
+            case 'stream': return this.callStreamObj(o, name, args, line);
+            case 'optional': return this.callOptional(o, name, args, line);
             case 'sb': return this.callSb(tv, name, args, line);
             case 'random': return this.callRandom(o, name, args, line);
             case 'classobj':
@@ -2390,6 +2674,8 @@
         }
         default:
           if (isPrimVal(tv)) {
+            const r = this.callPrim(tv, name, args, line);
+            if (r) return r;
             throw new CompileError(`${tv.t} è un tipo primitivo: non si possono invocare metodi su di esso`, line, `${tv.t} نوع بدائي: لا يمكن استدعاء دوال عليه مباشرة`);
           }
       }
@@ -2403,6 +2689,14 @@
           throw new CompileError(`${name}() ha accesso private in ${m.cls}`, line, `الدالة ${name}() خاصة (private) في الصنف ${m.cls} ولا يمكن استدعاؤها من خارجه`);
         }
         return this.invoke(m, m.mods.has('static') ? null : o, args, line);
+      }
+      if (o.enumName !== undefined) {
+        switch (name) {
+          case 'name': return this.str(o.enumName);
+          case 'ordinal': return mk.int(o.ordinal);
+          case 'compareTo': return mk.int(o.ordinal - args[0].v.ordinal);
+          default: break;
+        }
       }
       switch (name) {
         case 'toString': if (!args.length) return this.str(this.objToString(o)); break;
@@ -2518,7 +2812,8 @@
         case 'matches': need(1); return mk.bool(new RegExp('^(?:' + A(0).v + ')$').test(s));
         case 'intern': need(0); return this.str(s, true);
         case 'toString': need(0); return sv;
-        case 'chars': throw new Unsupported('stream di caratteri', line);
+        case 'chars': return this.makeStream([...s].map((ch) => mk.int(ch.charCodeAt(0))), 'int');
+        case 'lines': return this.makeStream(s.split('\n').map((x) => this.str(x)), null);
         default: throw this.noMatch('String', name, args, line);
       }
     }
@@ -2530,11 +2825,12 @@
       switch (name) {
         case 'add':
           immut();
-          if (args.length === 1) { o.items.push(args[0]); return mk.bool(true); }
+          if (args.length === 1) { o.items.push(args[0]); o.mod = (o.mod || 0) + 1; return mk.bool(true); }
           if (args.length === 2) {
             const i = this.intOf(args[0], line);
             if (i < 0 || i > n) throw ioobe(i);
             o.items.splice(i, 0, args[1]);
+            o.mod = (o.mod || 0) + 1;
             return VOID;
           }
           break;
@@ -2553,23 +2849,23 @@
         }
         case 'size': return mk.int(n);
         case 'isEmpty': return mk.bool(n === 0);
-        case 'clear': immut(); o.items.length = 0; return VOID;
+        case 'clear': immut(); o.items.length = 0; o.mod = (o.mod || 0) + 1; return VOID;
         case 'contains': return mk.bool(o.items.some((x) => this.javaEquals(x, args[0])));
         case 'indexOf': return mk.int(o.items.findIndex((x) => this.javaEquals(x, args[0])));
         case 'remove': {
           immut();
-          if (args[0].t === 'int') {
+          if (args[0].t === 'int' && !args[0].boxed) {
             const i = args[0].v;
             if (i < 0 || i >= n) throw ioobe(i);
+            o.mod = (o.mod || 0) + 1;
             return o.items.splice(i, 1)[0];
           }
           const i = o.items.findIndex((x) => this.javaEquals(x, args[0]));
-          if (i >= 0) o.items.splice(i, 1);
+          if (i >= 0) { o.items.splice(i, 1); o.mod = (o.mod || 0) + 1; }
           return mk.bool(i >= 0);
         }
         case 'toString': return this.str(this.objToString(o));
         case 'equals': return mk.bool(args[0].t === 'ref' && args[0].v.kind === 'list' && args[0].v.items.length === n && o.items.every((x, i) => this.javaEquals(x, args[0].v.items[i])));
-        case 'forEach': case 'stream': case 'iterator': case 'sort': throw new Unsupported(`ArrayList.${name}()`, line);
         default: break;
       }
       throw this.noMatch('ArrayList', name, args, line);
@@ -2609,6 +2905,13 @@
 
     callStatic(cls, name, args, line) {
       const c = this.cls(cls);
+      if (c && c.kind === 'enum' && (name === 'values' || name === 'valueOf') && !this.findMethod(cls, name, args)) {
+        if (name === 'values') return { t: 'ref', v: this.alloc({ kind: 'array', elem: { name: cls, dims: 0 }, items: c.enumValues.slice() }) };
+        const nm = args[0] && args[0].t === 'String' ? args[0].v : '';
+        const f = c.enumValues.find((x) => x.v.enumName === nm);
+        if (!f) throw this.jthrow('IllegalArgumentException', `No enum constant ${cls}.${nm}`, line);
+        return f;
+      }
       if (c) {
         const m = this.findMethod(cls, name, args);
         if (!m) throw this.noMatch(cls, name, args, line);
@@ -2621,6 +2924,8 @@
         }
         return this.invoke(m, null, args, line);
       }
+      const lib = this.callLibStatic(cls, name, args, line);
+      if (lib !== undefined) return lib;
       const num = (i) => {
         const a = args[i];
         if (!a || !isNum(a)) throw this.noMatch(cls, name, args, line);
@@ -2821,6 +3126,1201 @@
       throw this.noMatch(cls, name, args, line);
     }
 
+    // ───────────────────────── Libreria standard simulata ─────────────────────────
+    // Collezioni (con l'ordine di iterazione reale di HashMap/HashSet), lambda, stream,
+    // Scanner con input simulato e file system virtuale.
+
+    native(fn, arity, label) {
+      return { t: 'ref', v: { kind: 'lambda', native: fn, arity, label: label || 'λ', addr: '' } };
+    }
+
+    hashOf(v) {
+      switch (v.t) {
+        case 'null': return 0;
+        case 'String': return javaStringHash(v.v);
+        case 'int': case 'char': return v.v | 0;
+        case 'long': return (Math.floor(v.v / 4294967296) ^ (v.v >>> 0)) | 0;
+        case 'boolean': return v.v ? 1231 : 1237;
+        case 'double': {
+          const dv = new DataView(new ArrayBuffer(8));
+          dv.setFloat64(0, v.v);
+          return (dv.getInt32(0) ^ dv.getInt32(4)) | 0;
+        }
+        case 'ref': {
+          const o = v.v;
+          if (o.kind === 'obj' && o.enumName === undefined) {
+            const m = this.findMethod(o.cls, 'hashCode', []);
+            if (m) return this.invoke(m, o, [], 0).v | 0;
+          }
+          if (o.kind === 'list') return o.items.reduce((h, x) => (Math.imul(31, h) + this.hashOf(x)) | 0, 1);
+          if (o.kind === 'set') return o.entries.reduce((h, e) => (h + e.h) | 0, 0);
+          if (o.kind === 'entry') return this.hashOf(o.ent.k) ^ this.hashOf(o.ent.v);
+          return parseInt(this.hashHex(o) || '1b6d', 16) | 0;
+        }
+        default: return 0;
+      }
+    }
+
+    newMap(cls, order, cmp) {
+      return this.alloc({ kind: 'map', cls, order, entries: [], seq: 0, cap: 16, mod: 0, cmp: cmp || null });
+    }
+
+    newSet(cls, order, cmp) {
+      return this.alloc({ kind: 'set', cls, order, entries: [], seq: 0, cap: 16, mod: 0, cmp: cmp || null });
+    }
+
+    mapIndex(m, k, line) {
+      if (m.order === 'tree') {
+        if (k.t === 'null') throw this.jthrow('NullPointerException', null, line);
+        return m.entries.findIndex((e) => this.compareValues(e.k, k, m.cmp, line) === 0);
+      }
+      const h = this.hashOf(k);
+      return m.entries.findIndex((e) => e.h === h && (e.k.t === 'null' ? k.t === 'null' : this.javaEquals(e.k, k)));
+    }
+
+    /** head = true per computeIfAbsent/compute/merge: in Java il nuovo nodo va in testa al bucket. */
+    mapPut(m, k, v, line, head) {
+      const i = this.mapIndex(m, k, line);
+      if (i >= 0) {
+        const old = m.entries[i].v;
+        m.entries[i].v = v;
+        return old;
+      }
+      if (m.order === 'tree') this.compareValues(k, k, m.cmp, line);
+      m.entries.push({ k, v, h: this.hashOf(k), seq: head ? (m.headSeq = (m.headSeq || 0) - 1) : m.seq++ });
+      m.mod++;
+      while (m.entries.length > m.cap * 0.75) m.cap *= 2;
+      if (m.entries.length > 100000) throw new LimitError('collezione troppo grande per il simulatore', line);
+      return NULL;
+    }
+
+    mapRemove(m, k, line) {
+      const i = this.mapIndex(m, k, line);
+      if (i < 0) return null;
+      m.mod++;
+      return m.entries.splice(i, 1)[0];
+    }
+
+    /** Ordine di iterazione come in Java: HashMap per bucket, LinkedHashMap per inserimento, TreeMap ordinato. */
+    mapOrdered(m, line) {
+      if (m.order === 'linked') return m.entries.slice();
+      if (m.order === 'tree') return m.entries.slice().sort((a, b) => this.compareValues(a.k, b.k, m.cmp, line));
+      const mask = m.cap - 1;
+      const bucket = (h) => (h ^ (h >>> 16)) & mask;
+      return m.entries.slice().sort((a, b) => bucket(a.h) - bucket(b.h) || a.seq - b.seq);
+    }
+
+    iterValues(v, line) {
+      if (v.t === 'null') throw this.jthrow('NullPointerException', null, line);
+      if (v.t === 'ref') {
+        const o = v.v;
+        if (o.kind === 'array' || o.kind === 'list') return o.items.slice();
+        if (o.kind === 'set') return this.mapOrdered(o, line).map((e) => e.k);
+        if (o.kind === 'map') {
+          throw new CompileError('il for-each non si applica direttamente a una Map: usa keySet(), values() oppure entrySet()', line,
+            'لا يمكن المرور على Map مباشرة بحلقة for-each؛ استخدم keySet() أو values() أو entrySet()');
+        }
+      }
+      throw new CompileError('il for-each richiede un array o una collezione', line, 'حلقة for-each تحتاج إلى مصفوفة أو مجموعة (Collection)');
+    }
+
+    compareValues(a, b, cmp, line) {
+      if (cmp && cmp.t !== 'null') return this.intOf(this.callFn(cmp, [a, b], line, 'compare'), line);
+      if (a.t === 'null' || b.t === 'null') throw this.jthrow('NullPointerException', null, line);
+      if (a.t === 'String' && b.t === 'String') return this.callString(a, 'compareTo', [b], line).v;
+      if (isNum(a) && isNum(b)) return a.v < b.v ? -1 : a.v > b.v ? 1 : 0;
+      if (a.t === 'boolean' && b.t === 'boolean') return (a.v ? 1 : 0) - (b.v ? 1 : 0);
+      if (a.t === 'ref' && a.v.kind === 'obj') {
+        if (a.v.enumName !== undefined && b.t === 'ref' && b.v.enumName !== undefined) return a.v.ordinal - b.v.ordinal;
+        const m = this.findMethod(a.v.cls, 'compareTo', [b]);
+        if (m) return this.intOf(this.invoke(m, a.v, [b], line), line);
+      }
+      throw this.jthrow('ClassCastException', `class ${this.qualName(this.typeOfVal(a))} cannot be cast to class java.lang.Comparable`, line);
+    }
+
+    sortValues(items, cmp, line) {
+      return items.sort((x, y) => this.compareValues(x, y, cmp, line));
+    }
+
+    // ── Lambda e riferimenti a metodo ──
+    evalLambda(e) {
+      return { t: 'ref', v: this.alloc({ kind: 'lambda', params: e.params, expr: e.expr, block: e.block, env: this.captureEnv(), line: e.line, label: `(${e.params.join(', ')}) -> …` }) };
+    }
+
+    evalMref(e) {
+      const line = e.line, name = e.name, t = e.target;
+      const f = this.top();
+      const isClass = t.k === 'name' && !this.findVar(t.name) && !(f.self && f.self.fields.has(t.name)) &&
+        (this.classes.has(t.name) || STATIC_CLASSES.has(t.name) || KNOWN_LIB_TYPES.has(t.name) || t.name in BUILTIN_EXC);
+      const label = exprStr(t) + '::' + name;
+      if (isClass) {
+        const cls = t.name;
+        if (name === 'new') return this.native((args) => this.newObject(cls, args, line), -1, label);
+        const STATIC_REFS = { Integer: ['parseInt', 'valueOf', 'compare', 'sum', 'max', 'min', 'toString', 'toBinaryString'], Double: ['parseDouble', 'valueOf', 'compare', 'sum', 'max', 'min'],
+          String: ['valueOf', 'join', 'format'], Character: '*', Math: '*', Objects: '*', Arrays: '*', Collections: '*', Boolean: ['parseBoolean'], Long: ['parseLong', 'compare', 'sum'] };
+        return this.native((args) => {
+          const user = this.cls(cls);
+          if (user) {
+            const sm = this.findMethod(cls, name, args);
+            if (sm && sm.mods.has('static')) return this.invoke(sm, null, args, line);
+          } else if (STATIC_REFS[cls] && (STATIC_REFS[cls] === '*' || STATIC_REFS[cls].includes(name))) {
+            return this.callStatic(cls, name, args, line);
+          }
+          if (!args.length) throw this.noMatch(cls, name, args, line);
+          return this.callOn(args[0], name, args.slice(1), { target: { k: 'name', name: 'x' } }, line);
+        }, -1, label);
+      }
+      const tv = this.eval(t);
+      if (tv.t === 'null') throw this.jthrow('NullPointerException', null, line);
+      return this.native((args) => this.callOn(tv, name, args, { target: t }, line), -1, label);
+    }
+
+    callFn(f, args, line, hint) {
+      if (!f || f.t === 'null') throw this.jthrow('NullPointerException', null, line);
+      if (f.t !== 'ref') throw new CompileError('è richiesta una funzione (lambda) ma è stato trovato ' + this.typeOfVal(f), line, 'كان متوقعاً تعبير lambda أو دالة');
+      const o = f.v;
+      if (o.kind === 'lambda') {
+        if (o.native) return o.native(args, line);
+        if (args.length !== o.params.length) {
+          throw new CompileError(`la lambda si aspetta ${o.params.length} parametri ma ne riceve ${args.length}`, line, `تعبير lambda يتوقع ${o.params.length} معاملات لكنه تلقى ${args.length}`);
+        }
+        const fr = this.pushFrame(`lambda ${o.label}`, o.env.cls, o.env.self, o.line);
+        fr.traceName = 'lambda$' + (o.env.cls ? o.env.cls.name : 'main');
+        fr.scopes = o.env.scopes.concat([new Map()]);
+        fr.capturedDepth = o.env.scopes.length;
+        const own = fr.scopes[fr.scopes.length - 1];
+        o.params.forEach((p, i) => own.set(p, { type: this.inferType(args[i]), value: args[i], final: false, assigned: true }));
+        try {
+          this.record(o.line, 'lambdacall', { params: o.params, args });
+          if (o.expr) return this.eval(o.expr);
+          try {
+            this.execStmts(o.block.stmts);
+          } catch (ex) {
+            if (ex instanceof ReturnSig) return ex.value;
+            throw ex;
+          }
+          return VOID;
+        } finally {
+          this.popFrame();
+        }
+      }
+      if (o.kind === 'obj') {
+        let m = hint ? this.findMethod(o.cls, hint, args) : null;
+        if (!m) {
+          for (const c of this.chain(o.cls)) {
+            for (const mm of c.methods) {
+              if (!m && mm.body && !mm.mods.has('static') && mm.params.length === args.length && !['toString', 'equals', 'hashCode'].includes(mm.name)) m = mm;
+            }
+          }
+        }
+        if (m) return this.invoke(m, o, args, line);
+      }
+      throw new CompileError(`${this.typeOfVal(f)} non è un'interfaccia funzionale utilizzabile qui`, line, 'هذا الكائن ليس واجهة وظيفية (functional interface)');
+    }
+
+    fnArity(f) {
+      if (!f || f.t !== 'ref') return -1;
+      const o = f.v;
+      if (o.kind === 'lambda') return o.native ? o.arity : o.params.length;
+      return -1;
+    }
+
+    keyComparator(keyFn, keyCmp, line) {
+      return this.native((a) => mk.int(this.compareValues(this.callFn(keyFn, [a[0]], line, 'apply'), this.callFn(keyFn, [a[1]], line, 'apply'), keyCmp, line)), 2, 'Comparator.comparing');
+    }
+
+    callLambdaObj(fv, name, args, line) {
+      const self = fv;
+      switch (name) {
+        case 'reversed': return this.native((a) => mk.int(-this.compareValues(a[0], a[1], self, line)), 2, 'reversed');
+        case 'thenComparing': case 'thenComparingInt': case 'thenComparingDouble': case 'thenComparingLong': {
+          const next = this.fnArity(args[0]) === 2 && name === 'thenComparing' && args.length === 1 ? args[0] : this.keyComparator(args[0], args[1] || null, line);
+          return this.native((a) => {
+            const r = this.compareValues(a[0], a[1], self, line);
+            return mk.int(r !== 0 ? r : this.compareValues(a[0], a[1], next, line));
+          }, 2, 'thenComparing');
+        }
+        case 'negate': return this.native((a) => mk.bool(!this.bool(this.callFn(self, a, line, 'test'), line)), 1, 'negate');
+        case 'and': return this.native((a) => mk.bool(this.bool(this.callFn(self, a, line, 'test'), line) && this.bool(this.callFn(args[0], a, line, 'test'), line)), 1, 'and');
+        case 'or': return this.native((a) => mk.bool(this.bool(this.callFn(self, a, line, 'test'), line) || this.bool(this.callFn(args[0], a, line, 'test'), line)), 1, 'or');
+        case 'andThen': return this.native((a) => {
+          const r = this.callFn(self, a, line);
+          return r.t === 'void' ? this.callFn(args[0], a, line) : this.callFn(args[0], [r], line);
+        }, 1, 'andThen');
+        case 'compose': return this.native((a) => this.callFn(self, [this.callFn(args[0], a, line)], line), 1, 'compose');
+        case 'equals': return mk.bool(args[0].t === 'ref' && args[0].v === fv.v);
+        case 'hashCode': return mk.int(parseInt(this.hashHex(fv.v) || '1', 16));
+        case 'toString': return this.str(this.toStr(fv));
+        default: return this.callFn(fv, args, line, name);
+      }
+    }
+
+    // ── Creazione di oggetti della libreria ──
+    tableSizeFor(n) {
+      let c = 1;
+      while (c < n) c *= 2;
+      return Math.max(1, c);
+    }
+
+    fsName(v, line) {
+      if (v.t === 'String') return v.v;
+      if (v.t === 'ref' && (v.v.kind === 'file' || v.v.kind === 'path')) return v.v.name;
+      if (v.t === 'null') throw this.jthrow('NullPointerException', null, line);
+      throw new CompileError('è richiesto un nome di file (String) o un oggetto File', line, 'المطلوب اسم ملف (String) أو كائن File');
+    }
+
+    newCollectionOrIo(clsName, args, line) {
+      const a0 = args[0];
+      if (MAP_CLASSES[clsName]) {
+        const cmp = clsName === 'TreeMap' && a0 && a0.t === 'ref' && a0.v.kind !== 'map' ? a0 : null;
+        const m = this.newMap(clsName, MAP_CLASSES[clsName], cmp);
+        if (a0 && (a0.t === 'int') && MAP_CLASSES[clsName] === 'hash') m.cap = this.tableSizeFor(a0.v);
+        if (a0 && a0.t === 'ref' && a0.v.kind === 'map') for (const e of this.mapOrdered(a0.v, line)) this.mapPut(m, e.k, e.v, line);
+        return { t: 'ref', v: m };
+      }
+      if (SET_CLASSES[clsName]) {
+        const cmp = clsName === 'TreeSet' && a0 && a0.t === 'ref' && a0.v.kind === 'lambda' ? a0 : null;
+        const st = this.newSet(clsName, SET_CLASSES[clsName], cmp);
+        if (a0 && a0.t === 'int' && SET_CLASSES[clsName] === 'hash') st.cap = this.tableSizeFor(a0.v);
+        if (a0 && a0.t === 'ref' && !cmp && a0.v.kind !== 'lambda') {
+          if (SET_CLASSES[clsName] === 'hash') st.cap = Math.max(this.tableSizeFor(Math.floor(this.iterValues(a0, line).length / 0.75) + 1), 16);
+          for (const x of this.iterValues(a0, line)) this.mapPut(st, x, mk.bool(true), line);
+        }
+        return { t: 'ref', v: st };
+      }
+      switch (clsName) {
+        case 'Scanner': {
+          if (!a0) throw this.noMatch('Scanner', '<init>', args, line);
+          let src;
+          if (a0.t === 'stream' && a0.v === 'in') src = this.stdin;
+          else if (a0.t === 'String') src = { text: a0.v, pos: 0 };
+          else if (a0.t === 'ref' && a0.v.kind === 'file') {
+            if (!this.fs.has(a0.v.name)) throw this.jthrow('FileNotFoundException', `${a0.v.name} (No such file or directory)`, line);
+            src = { text: this.fs.get(a0.v.name), pos: 0 };
+          } else if (a0.t === 'ref' && a0.v.kind === 'reader') {
+            const r = a0.v.inner || a0.v;
+            src = { text: r.text.slice(r.pos), pos: 0 };
+          } else throw this.noMatch('Scanner', '<init>', args, line);
+          return { t: 'ref', v: this.alloc({ kind: 'scanner', src, closed: false }) };
+        }
+        case 'File': return { t: 'ref', v: this.alloc({ kind: 'file', name: this.fsName(a0, line) }) };
+        case 'FileReader': {
+          const name = this.fsName(a0, line);
+          if (!this.fs.has(name)) throw this.jthrow('FileNotFoundException', `${name} (No such file or directory)`, line);
+          return { t: 'ref', v: this.alloc({ kind: 'reader', cls: 'FileReader', name, text: this.fs.get(name), pos: 0, closed: false }) };
+        }
+        case 'BufferedReader': {
+          if (!(a0 && a0.t === 'ref' && a0.v.kind === 'reader')) throw this.noMatch('BufferedReader', '<init>', args, line);
+          return { t: 'ref', v: this.alloc({ kind: 'reader', cls: 'BufferedReader', name: a0.v.name, inner: a0.v.inner || a0.v }) };
+        }
+        case 'FileWriter': {
+          const name = this.fsName(a0, line);
+          const append = args[1] && args[1].t === 'boolean' && args[1].v;
+          this.fs.set(name, append ? (this.fs.get(name) || '') : '');
+          return { t: 'ref', v: this.alloc({ kind: 'writer', cls: 'FileWriter', name, pending: '', closed: false }) };
+        }
+        case 'PrintWriter': case 'BufferedWriter': {
+          if (a0 && a0.t === 'ref' && a0.v.kind === 'writer') {
+            return { t: 'ref', v: this.alloc({ kind: 'writer', cls: clsName, name: a0.v.name, inner: a0.v.inner || a0.v }) };
+          }
+          if (a0 && a0.t === 'stream') return a0;
+          const name = this.fsName(a0, line);
+          this.fs.set(name, '');
+          return { t: 'ref', v: this.alloc({ kind: 'writer', cls: clsName, name, pending: '', closed: false }) };
+        }
+        default: return null;
+      }
+    }
+
+    // ── Liste ──
+    callListExt(lv, name, args, line) {
+      const o = lv.v;
+      const bump = () => { o.mod = (o.mod || 0) + 1; };
+      const immut = () => { if (o.immutable) throw this.jthrow('UnsupportedOperationException', null, line); };
+      switch (name) {
+        case 'forEach': {
+          const mc = o.mod;
+          for (const x of o.items.slice()) {
+            this.callFn(args[0], [x], line, 'accept');
+            if (o.mod !== mc) throw this.jthrow('ConcurrentModificationException', null, line);
+          }
+          return VOID;
+        }
+        case 'removeIf': {
+          immut();
+          const keep = o.items.filter((x) => !this.bool(this.callFn(args[0], [x], line, 'test'), line));
+          const removed = keep.length !== o.items.length;
+          if (removed) { o.items = keep; bump(); }
+          return mk.bool(removed);
+        }
+        case 'replaceAll': immut(); o.items = o.items.map((x) => this.callFn(args[0], [x], line, 'apply')); return VOID;
+        case 'sort': immut(); this.sortValues(o.items, args[0] || null, line); bump(); return VOID;
+        case 'stream': return this.makeStream(o.items.slice(), null);
+        case 'iterator': case 'listIterator': return { t: 'ref', v: this.alloc({ kind: 'iter', list: o, cursor: 0, last: -1, mc: o.mod || 0 }) };
+        case 'addAll': {
+          immut();
+          const idx = args.length === 2 ? this.intOf(args[0], line) : o.items.length;
+          const add = this.iterValues(args[args.length - 1], line);
+          o.items.splice(idx, 0, ...add);
+          bump();
+          return mk.bool(add.length > 0);
+        }
+        case 'containsAll': return mk.bool(this.iterValues(args[0], line).every((x) => o.items.some((y) => this.javaEquals(y, x))));
+        case 'removeAll': case 'retainAll': {
+          immut();
+          const other = this.iterValues(args[0], line);
+          const keep = o.items.filter((x) => other.some((y) => this.javaEquals(x, y)) === (name === 'retainAll'));
+          const changed = keep.length !== o.items.length;
+          if (changed) { o.items = keep; bump(); }
+          return mk.bool(changed);
+        }
+        case 'subList': {
+          const a = this.intOf(args[0], line), b = this.intOf(args[1], line);
+          if (a < 0 || b > o.items.length || a > b) throw this.jthrow('IndexOutOfBoundsException', `fromIndex: ${a}, toIndex: ${b}, size: ${o.items.length}`, line);
+          return { t: 'ref', v: this.alloc({ kind: 'list', cls: 'ArrayList', items: o.items.slice(a, b), mod: 0 }) };
+        }
+        case 'toArray': return { t: 'ref', v: this.alloc({ kind: 'array', elem: { name: 'Object', dims: 0 }, items: o.items.slice() }) };
+        case 'lastIndexOf': {
+          for (let i = o.items.length - 1; i >= 0; i--) if (this.javaEquals(o.items[i], args[0])) return mk.int(i);
+          return mk.int(-1);
+        }
+        case 'hashCode': return mk.int(this.hashOf(lv));
+        case 'push': case 'addLast': case 'offer': case 'offerLast': immut(); o.items.push(args[0]); bump(); return name === 'push' ? args[0] : name === 'addLast' ? VOID : mk.bool(true);
+        case 'addFirst': case 'offerFirst': immut(); o.items.unshift(args[0]); bump(); return name === 'addFirst' ? VOID : mk.bool(true);
+        case 'pop': case 'removeLast': case 'pollLast': {
+          if (!o.items.length) {
+            if (name === 'pollLast') return NULL;
+            throw this.jthrow(name === 'pop' ? 'EmptyStackException' : 'NoSuchElementException', null, line);
+          }
+          bump();
+          return o.items.pop();
+        }
+        case 'removeFirst': case 'poll': case 'pollFirst': {
+          if (!o.items.length) { if (name !== 'removeFirst') return NULL; throw this.jthrow('NoSuchElementException', null, line); }
+          bump();
+          return o.items.shift();
+        }
+        case 'peek': case 'peekLast': if (!o.items.length) return NULL; return name === 'peek' && o.cls !== 'Stack' ? o.items[0] : o.items[o.items.length - 1];
+        case 'peekFirst': return o.items.length ? o.items[0] : NULL;
+        case 'getFirst': case 'element': if (!o.items.length) throw this.jthrow('NoSuchElementException', null, line); return o.items[0];
+        case 'getLast': if (!o.items.length) throw this.jthrow('NoSuchElementException', null, line); return o.items[o.items.length - 1];
+        case 'empty': return mk.bool(o.items.length === 0);
+        default: return undefined;
+      }
+    }
+
+    callIter(o, name, args, line) {
+      if (o.list) {
+        const l = o.list;
+        switch (name) {
+          case 'hasNext': return mk.bool(o.cursor !== l.items.length);
+          case 'next':
+            if ((l.mod || 0) !== o.mc) throw this.jthrow('ConcurrentModificationException', null, line);
+            if (o.cursor >= l.items.length) throw this.jthrow('NoSuchElementException', null, line);
+            o.last = o.cursor;
+            return l.items[o.cursor++];
+          case 'remove':
+            if (o.last < 0) throw this.jthrow('IllegalStateException', null, line);
+            if ((l.mod || 0) !== o.mc) throw this.jthrow('ConcurrentModificationException', null, line);
+            l.items.splice(o.last, 1);
+            o.cursor = o.last;
+            o.last = -1;
+            l.mod = (l.mod || 0) + 1;
+            o.mc = l.mod;
+            return VOID;
+          default: break;
+        }
+      } else {
+        switch (name) {
+          case 'hasNext': return mk.bool(o.i < o.keys.length);
+          case 'next':
+            if (o.coll.mod !== o.mc) throw this.jthrow('ConcurrentModificationException', null, line);
+            if (o.i >= o.keys.length) throw this.jthrow('NoSuchElementException', null, line);
+            o.lastKey = o.keys[o.i];
+            return o.vals[o.i++];
+          case 'remove':
+            if (o.lastKey === undefined) throw this.jthrow('IllegalStateException', null, line);
+            this.mapRemove(o.coll, o.lastKey, line);
+            o.lastKey = undefined;
+            o.mc = o.coll.mod;
+            return VOID;
+          default: break;
+        }
+      }
+      throw this.noMatch('Iterator', name, args, line);
+    }
+
+    // ── Mappe e insiemi ──
+    entryRef(m, e) {
+      return { t: 'ref', v: { kind: 'entry', ent: e, map: m, addr: '' } };
+    }
+
+    viewSet(m, kind, line) {
+      const ord = this.mapOrdered(m, line);
+      const view = { kind: 'set', cls: kind, order: 'linked', entries: [], seq: 0, cap: 16, mod: m.mod, view: m, addr: '' };
+      ord.forEach((e, i) => {
+        const k = kind === 'EntrySet' ? this.entryRef(m, e) : e.k;
+        view.entries.push({ k, v: NULL, h: kind === 'EntrySet' ? 0 : e.h, seq: i });
+      });
+      view.seq = ord.length;
+      return { t: 'ref', v: view };
+    }
+
+    callMap(mv, name, args, line) {
+      const m = mv.v;
+      const immut = () => { if (m.immutable) throw this.jthrow('UnsupportedOperationException', null, line); };
+      const val = (k) => { const i = this.mapIndex(m, k, line); return i >= 0 ? m.entries[i].v : null; };
+      switch (name) {
+        case 'put': immut(); return this.mapPut(m, args[0], args[1], line);
+        case 'get': { const v = val(args[0]); return v || NULL; }
+        case 'getOrDefault': { const v = val(args[0]); return v || args[1]; }
+        case 'containsKey': return mk.bool(this.mapIndex(m, args[0], line) >= 0);
+        case 'containsValue': return mk.bool(m.entries.some((e) => this.javaEquals(e.v, args[0]) || (e.v.t === 'null' && args[0].t === 'null')));
+        case 'remove': { immut(); const e = this.mapRemove(m, args[0], line); return e ? e.v : NULL; }
+        case 'size': return mk.int(m.entries.length);
+        case 'isEmpty': return mk.bool(m.entries.length === 0);
+        case 'clear': immut(); if (m.entries.length) m.mod++; m.entries = []; return VOID;
+        case 'keySet': case 'navigableKeySet': return this.viewSet(m, 'KeySet', line);
+        case 'entrySet': return this.viewSet(m, 'EntrySet', line);
+        case 'values': return { t: 'ref', v: { kind: 'list', cls: 'Values', items: this.mapOrdered(m, line).map((e) => e.v), mod: 0, addr: '' } };
+        case 'putIfAbsent': { immut(); const v = val(args[0]); if (v && v.t !== 'null') return v; this.mapPut(m, args[0], args[1], line); return NULL; }
+        case 'computeIfAbsent': {
+          immut();
+          const v = val(args[0]);
+          if (v && v.t !== 'null') return v;
+          const nv = this.callFn(args[1], [args[0]], line, 'apply');
+          if (nv.t !== 'null') this.mapPut(m, args[0], nv, line, true);
+          return nv;
+        }
+        case 'computeIfPresent': case 'compute': {
+          immut();
+          const v = val(args[0]);
+          if (name === 'computeIfPresent' && (!v || v.t === 'null')) return NULL;
+          const nv = this.callFn(args[1], [args[0], v || NULL], line, 'apply');
+          if (nv.t === 'null') this.mapRemove(m, args[0], line); else this.mapPut(m, args[0], nv, line, true);
+          return nv;
+        }
+        case 'merge': {
+          immut();
+          const v = val(args[0]);
+          const nv = !v || v.t === 'null' ? args[1] : this.callFn(args[2], [v, args[1]], line, 'apply');
+          if (nv.t === 'null') this.mapRemove(m, args[0], line); else this.mapPut(m, args[0], nv, line, true);
+          return nv;
+        }
+        case 'putAll': immut(); for (const e of this.mapOrdered(args[0].v, line)) this.mapPut(m, e.k, e.v, line); return VOID;
+        case 'forEach': {
+          const mc = m.mod;
+          for (const e of this.mapOrdered(m, line)) {
+            this.callFn(args[0], [e.k, e.v], line, 'accept');
+            if (m.mod !== mc) throw this.jthrow('ConcurrentModificationException', null, line);
+          }
+          return VOID;
+        }
+        case 'replaceAll': for (const e of m.entries) e.v = this.callFn(args[0], [e.k, e.v], line, 'apply'); return VOID;
+        case 'firstKey': case 'lastKey': {
+          const ord = this.mapOrdered(m, line);
+          if (!ord.length) throw this.jthrow('NoSuchElementException', null, line);
+          return name === 'firstKey' ? ord[0].k : ord[ord.length - 1].k;
+        }
+        case 'equals': {
+          const o = args[0].t === 'ref' ? args[0].v : null;
+          return mk.bool(!!o && o.kind === 'map' && o.entries.length === m.entries.length &&
+            m.entries.every((e) => { const i = this.mapIndex(o, e.k, line); return i >= 0 && this.javaEquals(e.v, o.entries[i].v); }));
+        }
+        case 'hashCode': return mk.int(m.entries.reduce((h, e) => (h + (e.h ^ this.hashOf(e.v))) | 0, 0));
+        case 'toString': return this.str(this.toStr(mv));
+        default: throw this.noMatch(m.cls, name, args, line);
+      }
+    }
+
+    callSet(sv, name, args, line) {
+      const st = sv.v;
+      const src = st.view || st;
+      const immut = () => { if (st.immutable || st.view) throw this.jthrow('UnsupportedOperationException', null, line); };
+      const has = (x) => this.mapIndex(st, x, line) >= 0;
+      switch (name) {
+        case 'add': { immut(); if (has(args[0])) return mk.bool(false); this.mapPut(st, args[0], mk.bool(true), line); return mk.bool(true); }
+        case 'contains': return mk.bool(st.kind === 'set' && st.cls === 'EntrySet' ? st.entries.some((e) => this.javaEquals(e.k, args[0])) : has(args[0]));
+        case 'remove': {
+          if (st.view && st.cls === 'KeySet') { const e = this.mapRemove(st.view, args[0], line); this.mapRemove(st, args[0], line); return mk.bool(!!e); }
+          immut();
+          return mk.bool(!!this.mapRemove(st, args[0], line));
+        }
+        case 'size': return mk.int(st.entries.length);
+        case 'isEmpty': return mk.bool(st.entries.length === 0);
+        case 'clear': immut(); if (st.entries.length) st.mod++; st.entries = []; return VOID;
+        case 'addAll': { immut(); let ch = false; for (const x of this.iterValues(args[0], line)) if (!has(x)) { this.mapPut(st, x, mk.bool(true), line); ch = true; } return mk.bool(ch); }
+        case 'containsAll': return mk.bool(this.iterValues(args[0], line).every((x) => has(x)));
+        case 'removeAll': case 'retainAll': {
+          immut();
+          const other = this.iterValues(args[0], line);
+          let ch = false;
+          for (const e of st.entries.slice()) {
+            const inOther = other.some((y) => this.javaEquals(e.k, y));
+            if (inOther === (name === 'removeAll')) { this.mapRemove(st, e.k, line); ch = true; }
+          }
+          return mk.bool(ch);
+        }
+        case 'removeIf': {
+          immut();
+          let ch = false;
+          for (const e of this.mapOrdered(st, line)) if (this.bool(this.callFn(args[0], [e.k], line, 'test'), line)) { this.mapRemove(st, e.k, line); ch = true; }
+          return mk.bool(ch);
+        }
+        case 'iterator': {
+          const ord = this.mapOrdered(st, line);
+          const coll = st.view || st;
+          return { t: 'ref', v: this.alloc({ kind: 'iter', coll, keys: ord.map((e) => (st.cls === 'EntrySet' ? e.k.v.ent.k : e.k)), vals: ord.map((e) => e.k), i: 0, mc: coll.mod }) };
+        }
+        case 'forEach': for (const x of this.iterValues(sv, line)) this.callFn(args[0], [x], line, 'accept'); return VOID;
+        case 'stream': return this.makeStream(this.iterValues(sv, line), null);
+        case 'first': case 'last': {
+          const ord = this.mapOrdered(st, line);
+          if (!ord.length) throw this.jthrow('NoSuchElementException', null, line);
+          return name === 'first' ? ord[0].k : ord[ord.length - 1].k;
+        }
+        case 'pollFirst': { const ord = this.mapOrdered(st, line); if (!ord.length) return NULL; this.mapRemove(st, ord[0].k, line); return ord[0].k; }
+        case 'equals': {
+          const o = args[0].t === 'ref' ? args[0].v : null;
+          return mk.bool(!!o && o.kind === 'set' && o.entries.length === st.entries.length && st.entries.every((e) => this.mapIndex(o, e.k, line) >= 0));
+        }
+        case 'hashCode': return mk.int(this.hashOf(sv));
+        case 'toArray': return { t: 'ref', v: this.alloc({ kind: 'array', elem: { name: 'Object', dims: 0 }, items: this.iterValues(sv, line) }) };
+        case 'toString': return this.str(this.toStr(sv));
+        default: void src; throw this.noMatch(st.cls, name, args, line);
+      }
+    }
+
+    callEntry(o, name, args, line) {
+      switch (name) {
+        case 'getKey': return o.ent.k;
+        case 'getValue': return o.ent.v;
+        case 'setValue': { const old = o.ent.v; o.ent.v = args[0]; return old; }
+        case 'toString': return this.str(this.toStr({ t: 'ref', v: o }));
+        case 'equals': return mk.bool(args[0].t === 'ref' && args[0].v.kind === 'entry' && this.javaEquals(o.ent.k, args[0].v.ent.k) && this.javaEquals(o.ent.v, args[0].v.ent.v));
+        case 'hashCode': return mk.int(this.hashOf(o.ent.k) ^ this.hashOf(o.ent.v));
+        default: throw this.noMatch('Map.Entry', name, args, line);
+      }
+    }
+
+    // ── Stream ──
+    makeStream(items, prim) {
+      return { t: 'ref', v: { kind: 'stream', src: items, ops: [], prim: prim || null, used: false, addr: '' } };
+    }
+
+    pipeStream(vals, ops, sink, line) {
+      const st = ops.map(() => ({ n: 0, seen: [] }));
+      outer:
+      for (const v of vals) {
+        let x = v;
+        let stopAfter = false;
+        for (let j = 0; j < ops.length; j++) {
+          const op = ops[j], s = st[j];
+          this.tick(line);
+          switch (op.k) {
+            case 'filter': if (!this.bool(this.callFn(op.f, [x], line, 'test'), line)) continue outer; break;
+            case 'map':
+              x = this.callFn(op.f, [x], line, 'apply');
+              if (op.to) x = op.to === 'int' ? mk.int(this.intOf(x, line)) : op.to === 'double' ? mk.double(x.v) : op.to === 'long' ? mk.long(x.v) : x;
+              break;
+            case 'peek': this.callFn(op.f, [x], line, 'accept'); break;
+            case 'distinct':
+              if (s.seen.some((y) => this.javaEquals(y, x))) continue outer;
+              s.seen.push(x);
+              break;
+            case 'skip': if (s.n < op.n) { s.n++; continue outer; } break;
+            case 'limit':
+              if (s.n >= op.n) break outer;
+              s.n++;
+              if (s.n >= op.n) stopAfter = true;
+              break;
+            default: break;
+          }
+        }
+        if (sink(x)) break;
+        if (stopAfter) break;
+      }
+    }
+
+    runStream(o, sink, line) {
+      if (o.used) throw this.jthrow('IllegalStateException', 'stream has already been operated upon or closed', line);
+      o.used = true;
+      const go = (vals, ops) => {
+        const i = ops.findIndex((op) => op.k === 'sorted');
+        if (i < 0) { this.pipeStream(vals, ops, sink, line); return; }
+        const buf = [];
+        this.pipeStream(vals, ops.slice(0, i), (x) => { buf.push(x); return false; }, line);
+        this.sortValues(buf, ops[i].cmp, line);
+        go(buf, ops.slice(i + 1));
+      };
+      go(o.src, o.ops);
+    }
+
+    collectStream(o, line) {
+      const out = [];
+      this.runStream(o, (x) => { out.push(x); return false; }, line);
+      return out;
+    }
+
+    optional(val, prim) {
+      return { t: 'ref', v: { kind: 'optional', val: val || null, prim: prim || null, addr: '' } };
+    }
+
+    callStreamObj(o, name, args, line) {
+      const next = (op, prim) => {
+        if (o.used) throw this.jthrow('IllegalStateException', 'stream has already been operated upon or closed', line);
+        o.used = true;
+        return { t: 'ref', v: { kind: 'stream', src: o.src, ops: o.ops.concat([op]), prim: prim === undefined ? o.prim : prim, used: false, addr: '' } };
+      };
+      const num = (x) => (o.prim === 'double' ? mk.double(x) : o.prim === 'long' ? mk.long(x) : mk.int(x));
+      switch (name) {
+        case 'filter': return next({ k: 'filter', f: args[0] });
+        case 'map': return next({ k: 'map', f: args[0], to: o.prim });
+        case 'mapToInt': return next({ k: 'map', f: args[0], to: 'int' }, 'int');
+        case 'mapToDouble': return next({ k: 'map', f: args[0], to: 'double' }, 'double');
+        case 'mapToLong': return next({ k: 'map', f: args[0], to: 'long' }, 'long');
+        case 'mapToObj': return next({ k: 'map', f: args[0] }, null);
+        case 'asDoubleStream': return next({ k: 'map', f: this.native((a) => mk.double(a[0].v), 1), to: 'double' }, 'double');
+        case 'boxed': return next({ k: 'peek', f: this.native(() => VOID, 1) }, null);
+        case 'peek': return next({ k: 'peek', f: args[0] });
+        case 'sorted': return next({ k: 'sorted', cmp: args[0] || null });
+        case 'distinct': return next({ k: 'distinct' });
+        case 'limit': return next({ k: 'limit', n: Number(args[0].v) });
+        case 'skip': return next({ k: 'skip', n: Number(args[0].v) });
+        case 'forEach': case 'forEachOrdered': this.runStream(o, (x) => { this.callFn(args[0], [x], line, 'accept'); return false; }, line); return VOID;
+        case 'collect': return this.applyCollector(args[0], this.collectStream(o, line), line);
+        case 'toList': return { t: 'ref', v: this.alloc({ kind: 'list', cls: 'ImmutableList', items: this.collectStream(o, line), mod: 0, immutable: true }) };
+        case 'toArray': {
+          const items = this.collectStream(o, line);
+          return { t: 'ref', v: this.alloc({ kind: 'array', elem: { name: o.prim || 'Object', dims: 0 }, items }) };
+        }
+        case 'count': return mk.long(this.collectStream(o, line).length);
+        case 'sum': return num(this.collectStream(o, line).reduce((s, x) => s + x.v, 0));
+        case 'average': {
+          const items = this.collectStream(o, line);
+          return this.optional(items.length ? mk.double(items.reduce((s, x) => s + x.v, 0) / items.length) : null, 'double');
+        }
+        case 'max': case 'min': {
+          const items = this.collectStream(o, line);
+          if (!items.length) return this.optional(null, o.prim);
+          const cmp = args[0] || null;
+          let best = items[0];
+          for (const x of items.slice(1)) {
+            const c = this.compareValues(x, best, cmp, line);
+            if (name === 'max' ? c > 0 : c < 0) best = x;
+          }
+          return this.optional(best, o.prim);
+        }
+        case 'reduce': {
+          const items = this.collectStream(o, line);
+          if (args.length >= 2) return items.reduce((acc, x) => this.callFn(args[1], [acc, x], line, 'apply'), args[0]);
+          if (!items.length) return this.optional(null, o.prim);
+          return this.optional(items.slice(1).reduce((acc, x) => this.callFn(args[0], [acc, x], line, 'apply'), items[0]), o.prim);
+        }
+        case 'anyMatch': case 'allMatch': case 'noneMatch': {
+          let found = false;
+          const want = name !== 'allMatch';
+          this.runStream(o, (x) => {
+            if (this.bool(this.callFn(args[0], [x], line, 'test'), line) === want) { found = true; return true; }
+            return false;
+          }, line);
+          return mk.bool(name === 'anyMatch' ? found : !found);
+        }
+        case 'findFirst': case 'findAny': {
+          let first = null;
+          this.runStream(o, (x) => { first = x; return true; }, line);
+          return this.optional(first, o.prim);
+        }
+        case 'iterator': return { t: 'ref', v: this.alloc({ kind: 'iter', list: { items: this.collectStream(o, line), mod: 0 }, cursor: 0, last: -1, mc: 0 }) };
+        default: throw this.noMatch('Stream', name, args, line);
+      }
+    }
+
+    applyCollector(cv, items, line) {
+      const c = cv.v;
+      if (!c || c.kind !== 'collector') throw new CompileError('collect richiede un Collector (es. Collectors.toList())', line, 'الدالة collect تحتاج إلى Collector مثل Collectors.toList()');
+      const a = c.args;
+      switch (c.type) {
+        case 'toList': return { t: 'ref', v: this.alloc({ kind: 'list', cls: 'ArrayList', items, mod: 0 }) };
+        case 'toSet': {
+          const st = this.newSet('HashSet', 'hash');
+          for (const x of items) if (this.mapIndex(st, x, line) < 0) this.mapPut(st, x, mk.bool(true), line);
+          return { t: 'ref', v: st };
+        }
+        case 'joining': {
+          const sep = a[0] ? a[0].v : '';
+          return this.str((a[1] ? a[1].v : '') + items.map((x) => this.toStr(x)).join(sep) + (a[2] ? a[2].v : ''));
+        }
+        case 'counting': return mk.long(items.length);
+        case 'summingInt': case 'summingDouble': case 'summingLong': {
+          const s = items.reduce((t, x) => t + this.callFn(a[0], [x], line, 'apply').v, 0);
+          return c.type === 'summingInt' ? mk.int(s) : c.type === 'summingLong' ? mk.long(s) : mk.double(s);
+        }
+        case 'averagingInt': case 'averagingDouble': return mk.double(items.length ? items.reduce((t, x) => t + this.callFn(a[0], [x], line, 'apply').v, 0) / items.length : 0);
+        case 'mapping': return this.applyCollector(a[1], items.map((x) => this.callFn(a[0], [x], line, 'apply')), line);
+        case 'groupingBy': case 'partitioningBy': {
+          const isPart = c.type === 'partitioningBy';
+          const groups = isPart ? this.newMap('LinkedHashMap', 'linked') : this.newMap('HashMap', 'hash');
+          const buckets = [];
+          if (isPart) for (const b of [false, true]) { const k = mk.bool(b); this.mapPut(groups, k, NULL, line); buckets.push({ k, items: [] }); }
+          for (const x of items) {
+            const k = isPart ? mk.bool(this.bool(this.callFn(a[0], [x], line, 'test'), line)) : this.callFn(a[0], [x], line, 'apply');
+            let b = buckets.find((bb) => this.javaEquals(bb.k, k));
+            if (!b) { b = { k, items: [] }; buckets.push(b); }
+            b.items.push(x);
+          }
+          const down = a[1] || { t: 'ref', v: { kind: 'collector', type: 'toList', args: [] } };
+          for (const b of buckets) this.mapPut(groups, b.k, this.applyCollector(down, b.items, line), line, !isPart);
+          return { t: 'ref', v: groups };
+        }
+        case 'toMap': {
+          const m = this.newMap('HashMap', 'hash');
+          for (const x of items) {
+            const k = this.callFn(a[0], [x], line, 'apply'), v = this.callFn(a[1], [x], line, 'apply');
+            const i = this.mapIndex(m, k, line);
+            if (i >= 0) {
+              if (!a[2]) throw this.jthrow('IllegalStateException', `Duplicate key ${this.toStr(k)} (attempted merging values ${this.toStr(m.entries[i].v)} and ${this.toStr(v)})`, line);
+              m.entries[i].v = this.callFn(a[2], [m.entries[i].v, v], line, 'apply');
+            } else this.mapPut(m, k, v, line, !!a[2]);
+          }
+          return { t: 'ref', v: m };
+        }
+        default: throw new Unsupported('Collectors.' + c.type, line);
+      }
+    }
+
+    callOptional(o, name, args, line) {
+      const empty = !o.val;
+      const none = () => this.jthrow('NoSuchElementException', 'No value present', line);
+      switch (name) {
+        case 'isPresent': return mk.bool(!empty);
+        case 'isEmpty': return mk.bool(empty);
+        case 'get': case 'getAsInt': case 'getAsDouble': case 'getAsLong': case 'orElseThrow': if (empty) throw none(); return o.val;
+        case 'orElse': return empty ? args[0] : o.val;
+        case 'orElseGet': return empty ? this.callFn(args[0], [], line, 'get') : o.val;
+        case 'ifPresent': if (!empty) this.callFn(args[0], [o.val], line, 'accept'); return VOID;
+        case 'ifPresentOrElse': if (!empty) this.callFn(args[0], [o.val], line, 'accept'); else this.callFn(args[1], [], line, 'run'); return VOID;
+        case 'map': return empty ? this.optional(null) : this.optional(this.callFn(args[0], [o.val], line, 'apply'));
+        case 'filter': return empty || !this.bool(this.callFn(args[0], [o.val], line, 'test'), line) ? this.optional(null) : this.optional(o.val);
+        case 'toString': return this.str(this.toStr({ t: 'ref', v: o }));
+        default: throw this.noMatch('Optional', name, args, line);
+      }
+    }
+
+    // ── Scanner (input da tastiera simulato) ──
+    echoInput(src, end) {
+      if (!src.isStdin || end <= src.echoed) return;
+      let lineEnd = src.text.indexOf('\n', Math.max(0, end - 1));
+      if (lineEnd < 0) lineEnd = src.text.length;
+      this.out.push({ text: src.text.slice(src.echoed, lineEnd) + '\n', err: false, input: true });
+      src.echoed = lineEnd + 1;
+    }
+
+    callScanner(o, name, args, line) {
+      if (o.closed && name !== 'close') throw this.jthrow('IllegalStateException', 'Scanner closed', line);
+      const src = o.src;
+      const T = src.text;
+      const tok = () => {
+        let a = src.pos;
+        while (a < T.length && /\s/.test(T[a])) a++;
+        let b = a;
+        while (b < T.length && !/\s/.test(T[b])) b++;
+        return a < T.length ? [a, b, T.slice(a, b)] : null;
+      };
+      const consume = (end) => { src.pos = end; this.echoInput(src, end); };
+      const need = () => {
+        const t = tok();
+        if (!t) {
+          if (src.isStdin) {
+            throw new Unsupported('lettura di input: l\'input simulato è terminato. Aggiungi altre righe nel riquadro «Input (stdin)» prima di eseguire', line);
+          }
+          throw this.jthrow('NoSuchElementException', null, line);
+        }
+        return t;
+      };
+      const reInt = /^[+-]?\d+$/;
+      const reDbl = /^[+-]?(\d+([.,]\d*)?|[.,]\d+)([eE][+-]?\d+)?$/;
+      switch (name) {
+        case 'nextInt': case 'nextLong': case 'nextShort': case 'nextByte': {
+          const t = need();
+          if (!reInt.test(t[2])) throw this.jthrow('InputMismatchException', `For input string: "${t[2]}"`, line);
+          consume(t[1]);
+          this.lastInput = { method: name, val: t[2] };
+          return name === 'nextLong' ? mk.long(parseInt(t[2], 10)) : mk.int(parseInt(t[2], 10));
+        }
+        case 'nextDouble': case 'nextFloat': {
+          const t = need();
+          if (!reDbl.test(t[2])) throw this.jthrow('InputMismatchException', `For input string: "${t[2]}"`, line);
+          consume(t[1]);
+          this.lastInput = { method: name, val: t[2] };
+          return mk.double(parseFloat(t[2].replace(',', '.')));
+        }
+        case 'nextBoolean': {
+          const t = need();
+          if (!/^(true|false)$/i.test(t[2])) throw this.jthrow('InputMismatchException', `For input string: "${t[2]}"`, line);
+          consume(t[1]);
+          this.lastInput = { method: name, val: t[2] };
+          return mk.bool(t[2].toLowerCase() === 'true');
+        }
+        case 'next': {
+          const t = need();
+          consume(t[1]);
+          this.lastInput = { method: name, val: t[2] };
+          return this.str(t[2]);
+        }
+        case 'nextLine': {
+          if (src.pos >= T.length) {
+            if (src.isStdin) throw new Unsupported('lettura di input: l\'input simulato è terminato. Aggiungi altre righe nel riquadro «Input (stdin)» prima di eseguire', line);
+            throw this.jthrow('NoSuchElementException', 'No line found', line);
+          }
+          const e = T.indexOf('\n', src.pos);
+          const text = e < 0 ? T.slice(src.pos) : T.slice(src.pos, e);
+          consume(e < 0 ? T.length : e + 1);
+          this.lastInput = { method: name, val: JSON.stringify(text), empty: text === '' };
+          return this.str(text);
+        }
+        case 'hasNext': return mk.bool(!!tok());
+        case 'hasNextInt': case 'hasNextLong': { const t = tok(); return mk.bool(!!t && reInt.test(t[2])); }
+        case 'hasNextDouble': { const t = tok(); return mk.bool(!!t && reDbl.test(t[2])); }
+        case 'hasNextBoolean': { const t = tok(); return mk.bool(!!t && /^(true|false)$/i.test(t[2])); }
+        case 'hasNextLine': return mk.bool(src.pos < T.length);
+        case 'close': o.closed = true; return VOID;
+        case 'useDelimiter': case 'useLocale': return { t: 'ref', v: o };
+        default: throw this.noMatch('Scanner', name, args, line);
+      }
+    }
+
+    // ── File system virtuale ──
+    callFile(o, name, args, line) {
+      switch (name) {
+        case 'exists': case 'isFile': case 'canRead': return mk.bool(this.fs.has(o.name));
+        case 'getName': case 'getPath': case 'toString': case 'getFileName': case 'getAbsolutePath': return this.str(o.name);
+        case 'length': return mk.long(this.fs.has(o.name) ? this.fs.get(o.name).length : 0);
+        case 'delete': { const had = this.fs.has(o.name); this.fs.delete(o.name); return mk.bool(had); }
+        case 'createNewFile': { if (this.fs.has(o.name)) return mk.bool(false); this.fs.set(o.name, ''); return mk.bool(true); }
+        case 'isDirectory': return mk.bool(false);
+        case 'equals': return mk.bool(args[0].t === 'ref' && args[0].v.name === o.name);
+        default: throw this.noMatch(o.kind === 'path' ? 'Path' : 'File', name, args, line);
+      }
+    }
+
+    callReader(o, name, args, line) {
+      const r = o.inner || o;
+      if (r.closed && name !== 'close') throw this.jthrow('IOException', 'Stream closed', line);
+      switch (name) {
+        case 'readLine': {
+          if (r.pos >= r.text.length) return NULL;
+          const e = r.text.indexOf('\n', r.pos);
+          const text = e < 0 ? r.text.slice(r.pos) : r.text.slice(r.pos, e);
+          r.pos = e < 0 ? r.text.length : e + 1;
+          return this.str(text.replace(/\r$/, ''));
+        }
+        case 'read': return mk.int(r.pos < r.text.length ? r.text.charCodeAt(r.pos++) : -1);
+        case 'ready': return mk.bool(r.pos < r.text.length);
+        case 'lines': {
+          const rest = r.text.slice(r.pos);
+          r.pos = r.text.length;
+          const ls = rest.split('\n');
+          if (ls[ls.length - 1] === '') ls.pop();
+          return this.makeStream(ls.map((x) => this.str(x)), null);
+        }
+        case 'close': r.closed = true; o.closed = true; return VOID;
+        default: throw this.noMatch(o.cls, name, args, line);
+      }
+    }
+
+    callWriter(o, name, args, line) {
+      const w = o.inner || o;
+      if (w.closed && name !== 'close') {
+        if (o.cls === 'PrintWriter') return VOID;
+        throw this.jthrow('IOException', 'Stream closed', line);
+      }
+      const put = (txt) => { w.pending += txt; };
+      const commit = () => { this.fs.set(w.name, (this.fs.get(w.name) || '') + w.pending); w.pending = ''; };
+      switch (name) {
+        case 'write': case 'append':
+          if (args[0].t === 'int') put(String.fromCharCode(args[0].v));
+          else put(this.toStr(args[0]));
+          return name === 'append' ? { t: 'ref', v: o } : VOID;
+        case 'print': put(this.toStr(args[0])); return VOID;
+        case 'println': put((args.length ? this.toStr(args[0]) : '') + '\n'); return VOID;
+        case 'printf': case 'format': put(this.format(args[0].v, args.slice(1), line)); return { t: 'ref', v: o };
+        case 'newLine': put('\n'); return VOID;
+        case 'flush': commit(); return VOID;
+        case 'close': if (!w.closed) { commit(); w.closed = true; } o.closed = true; return VOID;
+        case 'checkError': return mk.bool(false);
+        default: throw this.noMatch(o.cls, name, args, line);
+      }
+    }
+
+    // ── Metodi dei tipi "wrapper" (Integer, Double, ...) chiamati su valori primitivi ──
+    callPrim(v, name, args, line) {
+      switch (name) {
+        case 'compareTo': return mk.int(this.compareValues(v, args[0], null, line));
+        case 'equals': return mk.bool(args[0].t === v.t && args[0].v === v.v);
+        case 'intValue': return mk.int(v.t === 'double' ? this.d2i(v.v) : v.v);
+        case 'doubleValue': case 'floatValue': return mk.double(v.v);
+        case 'longValue': return mk.long(v.v);
+        case 'booleanValue': case 'charValue': return v;
+        case 'toString': return this.str(this.toStr(v));
+        case 'hashCode': return mk.int(this.hashOf(v));
+        case 'isNaN': return mk.bool(Number.isNaN(v.v));
+        default: return null;
+      }
+    }
+
+    // ── try-with-resources ──
+    execResources(s) {
+      this.pushScope();
+      const opened = [];
+      let primary = null;
+      try {
+        for (const r of s.resources) {
+          this.tick(r.line);
+          const v = r.init ? this.eval(r.init) : this.eval(r.expr);
+          if (r.init) {
+            const val = this.coerce(v, r.type, r.line);
+            this.declare(r.name, r.type.name === 'var' ? this.inferType(val) : r.type, val, true, r.line);
+            this.record(r.line, 'decl', { name: r.name, type: r.type, val, init: r.init });
+          }
+          opened.push({ v, line: r.line, name: r.name || exprStr(r.expr) });
+        }
+        this.execBlock(s.block.stmts);
+      } catch (ex) {
+        primary = ex;
+      }
+      for (let i = opened.length - 1; i >= 0; i--) {
+        const r = opened[i];
+        if (r.v.t === 'null') continue;
+        try {
+          this.callOn(r.v, 'close', [], { target: { k: 'name', name: r.name } }, r.line);
+          this.record(r.line, 'close', { name: r.name });
+        } catch (ex2) {
+          if (!primary) primary = ex2;
+        }
+      }
+      this.popScope();
+      if (primary) throw primary;
+    }
+
+    // ── switch su enum ed espressioni switch ──
+    switchMatch(v, l) {
+      if (v.t === 'ref' && v.v.enumName !== undefined && l.k === 'name') return v.v.enumName === l.name;
+      const lv = this.eval(l);
+      if (v.t === 'String' && lv.t === 'String') return v.v === lv.v;
+      if (isNum(v) && isNum(lv)) return v.v === lv.v;
+      if (v.t === 'ref' && lv.t === 'ref') return v.v === lv.v;
+      return false;
+    }
+
+    evalSwitchExpr(e) {
+      const v = this.eval(e.disc);
+      if (v.t === 'null') throw this.jthrow('NullPointerException', null, e.line);
+      let start = e.cases.findIndex((c) => c.labels && c.labels.some((l) => this.switchMatch(v, l)));
+      if (start < 0) start = e.cases.findIndex((c) => !c.labels);
+      if (start < 0) {
+        throw new CompileError('l\'espressione switch non copre tutti i casi: aggiungi default', e.line, 'تعبير switch لا يغطي جميع الحالات: أضف الحالة default');
+      }
+      this.pushScope();
+      try {
+        for (let i = start; i < e.cases.length; i++) {
+          const c = e.cases[i];
+          if (c.arrow) {
+            const b = c.body[0];
+            if (b.k === 'expr') return this.eval(b.e);
+            try { this.exec(b); } catch (ex) { if (ex instanceof YieldSig) return ex.value; throw ex; }
+            break;
+          }
+          try {
+            for (const st of c.body) this.exec(st);
+          } catch (ex) {
+            if (ex instanceof YieldSig) return ex.value;
+            throw ex;
+          }
+        }
+      } finally {
+        this.popScope();
+      }
+      throw new CompileError('il ramo dello switch deve produrre un valore con yield', e.line, 'يجب أن يُنتج فرع switch قيمة باستخدام yield');
+    }
+
+    // ── Metodi statici della libreria ──
+    collector(type, args) {
+      return { t: 'ref', v: { kind: 'collector', type, args, addr: '' } };
+    }
+
+    callLibStatic(cls, name, args, line) {
+      const a0 = args[0];
+      const list = (items, immutable) => ({ t: 'ref', v: this.alloc({ kind: 'list', cls: immutable ? 'ImmutableList' : 'ArrayList', items, mod: 0, immutable: !!immutable }) });
+      switch (cls) {
+        case 'Collections': {
+          const o = a0 && a0.t === 'ref' ? a0.v : null;
+          switch (name) {
+            case 'sort': if (o.immutable) throw this.jthrow('UnsupportedOperationException', null, line); this.sortValues(o.items, args[1] || null, line); o.mod = (o.mod || 0) + 1; return VOID;
+            case 'reverse': o.items.reverse(); return VOID;
+            case 'shuffle': {
+              let seed = 7;
+              for (let i = o.items.length - 1; i > 0; i--) {
+                seed = (seed * 1103515245 + 12345) % 2147483648;
+                const j = seed % (i + 1);
+                [o.items[i], o.items[j]] = [o.items[j], o.items[i]];
+              }
+              return VOID;
+            }
+            case 'max': case 'min': {
+              const items = this.iterValues(a0, line);
+              if (!items.length) throw this.jthrow('NoSuchElementException', null, line);
+              let best = items[0];
+              for (const x of items.slice(1)) {
+                const c = this.compareValues(x, best, args[1] || null, line);
+                if (name === 'max' ? c > 0 : c < 0) best = x;
+              }
+              return best;
+            }
+            case 'frequency': return mk.int(this.iterValues(a0, line).filter((x) => this.javaEquals(x, args[1]) || (x.t === 'null' && args[1].t === 'null')).length);
+            case 'swap': { const i = this.intOf(args[1], line), j = this.intOf(args[2], line); [o.items[i], o.items[j]] = [o.items[j], o.items[i]]; return VOID; }
+            case 'emptyList': return list([], true);
+            case 'unmodifiableList': return list(o.items.slice(), true);
+            case 'nCopies': return list(Array.from({ length: this.intOf(a0, line) }, () => args[1]), true);
+            case 'addAll': { o.items.push(...args.slice(1)); o.mod = (o.mod || 0) + 1; return mk.bool(args.length > 1); }
+            case 'reverseOrder': return a0 ? this.native((a) => mk.int(this.compareValues(a[1], a[0], a0, line)), 2, 'reverseOrder') : this.native((a) => mk.int(this.compareValues(a[1], a[0], null, line)), 2, 'reverseOrder');
+            default: return undefined;
+          }
+        }
+        case 'Comparator':
+          switch (name) {
+            case 'comparing': case 'comparingInt': case 'comparingDouble': case 'comparingLong': return this.keyComparator(a0, args[1] || null, line);
+            case 'naturalOrder': return this.native((a) => mk.int(this.compareValues(a[0], a[1], null, line)), 2, 'naturalOrder');
+            case 'reverseOrder': return this.native((a) => mk.int(this.compareValues(a[1], a[0], null, line)), 2, 'reverseOrder');
+            default: return undefined;
+          }
+        case 'Collectors': {
+          const known = ['toList', 'toSet', 'joining', 'counting', 'groupingBy', 'partitioningBy', 'summingInt', 'summingDouble', 'summingLong',
+            'averagingInt', 'averagingDouble', 'toMap', 'mapping'];
+          if (!known.includes(name)) return undefined;
+          const ga = name === 'groupingBy' && args.length === 3 ? [args[0], args[2]] : args;
+          return this.collector(name, ga);
+        }
+        case 'Stream':
+          if (name === 'of') return this.makeStream(args.length === 1 && a0.t === 'ref' && a0.v.kind === 'array' ? a0.v.items.slice() : args.slice(), null);
+          if (name === 'empty') return this.makeStream([], null);
+          if (name === 'iterate' && args.length === 3) {
+            const items = [];
+            for (let x = a0; this.bool(this.callFn(args[1], [x], line, 'test'), line); x = this.callFn(args[2], [x], line, 'apply')) {
+              items.push(x);
+              if (items.length > 100000) throw new LimitError('stream troppo lungo', line);
+            }
+            return this.makeStream(items, null);
+          }
+          return undefined;
+        case 'IntStream': case 'DoubleStream': {
+          const prim = cls === 'IntStream' ? 'int' : 'double';
+          if (name === 'range' || name === 'rangeClosed') {
+            const a = this.intOf(a0, line), b = this.intOf(args[1], line) + (name === 'rangeClosed' ? 1 : 0);
+            if (b - a > 100000) throw new LimitError('intervallo troppo grande per il simulatore', line);
+            const items = [];
+            for (let i = a; i < b; i++) items.push(mk.int(i));
+            return this.makeStream(items, 'int');
+          }
+          if (name === 'of') return this.makeStream(args.length === 1 && a0.t === 'ref' ? a0.v.items.slice() : args.map((x) => (prim === 'int' ? mk.int(x.v) : mk.double(x.v))), prim);
+          return undefined;
+        }
+        case 'Arrays': {
+          const arr = a0 && a0.t === 'ref' && a0.v.kind === 'array' ? a0.v : null;
+          if (name === 'stream' && arr) {
+            const e = arr.elem;
+            const prim = e.dims === 0 && ['int', 'double', 'long'].includes(e.name) ? e.name : null;
+            return this.makeStream(arr.items.slice(), prim);
+          }
+          if (name === 'sort' && arr) {
+            if (args.length === 3 && args[1].t === 'int') {
+              const from = args[1].v, to = args[2].v;
+              const part = this.sortValues(arr.items.slice(from, to), null, line);
+              arr.items.splice(from, to - from, ...part);
+            } else this.sortValues(arr.items, args[1] || null, line);
+            return VOID;
+          }
+          return undefined;
+        }
+        case 'List': case 'Set': case 'Map':
+          if (cls === 'List' && (name === 'of' || name === 'copyOf')) {
+            const items = name === 'copyOf' ? this.iterValues(a0, line) : (args.length === 1 && a0.t === 'ref' && a0.v.kind === 'array' ? a0.v.items.slice() : args.slice());
+            if (items.some((x) => x.t === 'null')) throw this.jthrow('NullPointerException', null, line);
+            return list(items, true);
+          }
+          if (cls === 'Set' && name === 'of') {
+            const st = this.newSet('ImmutableSet', 'linked');
+            for (const x of args) {
+              if (this.mapIndex(st, x, line) >= 0) throw this.jthrow('IllegalArgumentException', 'duplicate element: ' + this.toStr(x), line);
+              this.mapPut(st, x, mk.bool(true), line);
+            }
+            st.immutable = true;
+            return { t: 'ref', v: st };
+          }
+          if (cls === 'Map' && name === 'of') {
+            const m = this.newMap('ImmutableMap', 'linked');
+            for (let i = 0; i + 1 < args.length; i += 2) this.mapPut(m, args[i], args[i + 1], line);
+            m.immutable = true;
+            return { t: 'ref', v: m };
+          }
+          if (cls === 'Map' && name === 'entry') return { t: 'ref', v: { kind: 'entry', ent: { k: a0, v: args[1] }, addr: '' } };
+          return undefined;
+        case 'Optional':
+          if (name === 'of') { if (a0.t === 'null') throw this.jthrow('NullPointerException', null, line); return this.optional(a0); }
+          if (name === 'ofNullable') return this.optional(a0.t === 'null' ? null : a0);
+          if (name === 'empty') return this.optional(null);
+          return undefined;
+        case 'Objects':
+          if (name === 'hash') return mk.int(args.reduce((h, x) => (Math.imul(31, h) + this.hashOf(x)) | 0, 1));
+          return undefined;
+        case 'Paths': case 'Path':
+          if (name === 'get' || name === 'of') return { t: 'ref', v: this.alloc({ kind: 'path', name: args.map((x) => x.v).join('/') }) };
+          return undefined;
+        case 'Files': {
+          const name0 = a0 ? this.fsName(a0, line) : '';
+          const missing = () => this.jthrow('NoSuchFileException', name0, line);
+          switch (name) {
+            case 'exists': return mk.bool(this.fs.has(name0));
+            case 'readAllLines': {
+              if (!this.fs.has(name0)) throw missing();
+              const ls = this.fs.get(name0).split('\n');
+              if (ls[ls.length - 1] === '') ls.pop();
+              return list(ls.map((x) => this.str(x)));
+            }
+            case 'readString': if (!this.fs.has(name0)) throw missing(); return this.str(this.fs.get(name0));
+            case 'lines': {
+              if (!this.fs.has(name0)) throw missing();
+              const ls = this.fs.get(name0).split('\n');
+              if (ls[ls.length - 1] === '') ls.pop();
+              return this.makeStream(ls.map((x) => this.str(x)), null);
+            }
+            case 'writeString': this.fs.set(name0, this.toStr(args[1])); return a0;
+            case 'write': this.fs.set(name0, this.iterValues(args[1], line).map((x) => this.toStr(x) + '\n').join('')); return a0;
+            case 'delete': case 'deleteIfExists': { const had = this.fs.has(name0); if (!had && name === 'delete') throw missing(); this.fs.delete(name0); return name === 'delete' ? VOID : mk.bool(had); }
+            default: return undefined;
+          }
+        }
+        case 'Integer':
+          if (name === 'valueOf' && a0 && a0.t === 'int') return { ...a0, boxed: true };
+          return undefined;
+        default: return undefined;
+      }
+    }
+
+    shortLabel(o) {
+      const dv = (x) => this.dispVal(x).val;
+      switch (o.kind) {
+        case 'entry': return `${dv(o.ent.k)}=${dv(o.ent.v)}`;
+        case 'lambda': return 'λ ' + (o.label || 'lambda');
+        case 'stream': return 'Stream';
+        case 'optional': return o.val ? `Optional[${dv(o.val)}]` : 'Optional.empty';
+        case 'collector': return 'Collector';
+        case 'set': case 'list': return `${o.cls} (${(o.entries || o.items).length})`;
+        case 'classobj': return 'class ' + o.name;
+        default: return '<' + o.kind + '>';
+      }
+    }
+
     // ── Trace / istantanee ──
     dispVal(v) {
       if (v === undefined) return { val: '—', uninit: true };
@@ -2828,7 +4328,7 @@
         case 'String': return { val: JSON.stringify(v.v.length > 40 ? v.v.slice(0, 40) + '…' : v.v), str: true };
         case 'char': return { val: v.v === 0 ? "'\\u0000'" : "'" + String.fromCharCode(v.v) + "'" };
         case 'null': return { val: 'null', nul: true };
-        case 'ref': return v.v.addr ? { val: v.v.addr, ref: v.v.addr } : { val: '<' + v.v.kind + '>' };
+        case 'ref': return v.v.addr ? { val: v.v.addr, ref: v.v.addr } : { val: this.shortLabel(v.v) };
         case 'double': return { val: javaDouble(v.v) };
         case 'class': return { val: v.v };
         case 'void': return { val: 'void' };
@@ -2838,9 +4338,16 @@
 
     heapLabel(o) {
       switch (o.kind) {
-        case 'obj': return o.cls;
+        case 'obj': return o.enumName !== undefined ? `${o.cls}.${o.enumName}` : o.cls;
         case 'array': return `${typeStr(o.elem)}[${o.items.length}]`;
         case 'list': return `${o.cls}<> (size ${o.items.length})`;
+        case 'map': case 'set': return `${o.cls}<> (size ${o.entries.length})`;
+        case 'lambda': return 'λ ' + (o.label || 'lambda');
+        case 'scanner': return `Scanner(${o.src.isStdin ? 'System.in' : 'testo/file'})`;
+        case 'file': return `File("${o.name}")`;
+        case 'path': return `Path("${o.name}")`;
+        case 'reader': case 'writer': return `${o.cls}("${o.name}")`;
+        case 'iter': return 'Iterator';
         case 'sb': return 'StringBuilder';
         case 'random': return 'Random';
         default: return o.kind;
@@ -2887,7 +4394,10 @@
         if (seen.has(o)) continue;
         seen.add(o);
         order.push(o);
-        const kids = o.kind === 'obj' ? [...o.fields.values()].map((f) => f.value) : (o.kind === 'array' || o.kind === 'list') ? o.items : [];
+        const kids = o.kind === 'obj' ? [...o.fields.values()].map((f) => f.value)
+          : (o.kind === 'array' || o.kind === 'list') ? o.items
+            : (o.kind === 'map' || o.kind === 'set') ? o.entries.flatMap((e) => [e.k, e.v])
+              : (o.kind === 'iter' && o.list && o.list.addr) ? [{ t: 'ref', v: o.list }] : [];
         for (const k of kids) if (k && k.t === 'ref' && k.v.addr && !seen.has(k.v)) queue.push(k.v);
       }
       const garbage = [];
@@ -2909,6 +4419,27 @@
           o.items.slice(0, 16).forEach((v, i) => fields.push({ name: `[${i}]`, ...this.dispVal(v) }));
           if (o.items.length > 16) fields.push({ name: '…', val: `+${o.items.length - 16}` });
         } else if (o.kind === 'sb') fields.push({ name: 'valore', ...this.dispVal(this.str(o.s)) });
+        else if (o.kind === 'map' || o.kind === 'set') {
+          const ord = this.mapOrdered(o, 0);
+          ord.slice(0, 16).forEach((e, i) => {
+            if (o.kind === 'map') fields.push({ name: this.dispVal(e.k).val, ...this.dispVal(e.v) });
+            else fields.push({ name: `[${i}]`, ...this.dispVal(e.k) });
+          });
+          if (ord.length > 16) fields.push({ name: '…', val: `+${ord.length - 16}` });
+        } else if (o.kind === 'scanner') {
+          const rest = o.src.text.slice(o.src.pos);
+          fields.push({ name: 'input residuo', ...this.dispVal(this.str(rest.replace(/\n/g, '⏎'))) });
+        } else if (o.kind === 'writer') {
+          const w = o.inner || o;
+          fields.push({ name: 'buffer (non ancora su file)', ...this.dispVal(this.str(w.pending.replace(/\n/g, '⏎'))) });
+          fields.push({ name: 'chiuso', val: String(!!w.closed) });
+        } else if (o.kind === 'reader') {
+          const r = o.inner || o;
+          fields.push({ name: 'posizione', val: `${r.pos}/${r.text.length}` });
+        } else if (o.kind === 'lambda' && o.params) {
+          fields.push({ name: 'parametri', val: '(' + o.params.join(', ') + ')' });
+        }
+        if (o.enumName !== undefined) fields.unshift({ name: 'ordinal()', val: String(o.ordinal) });
         return { addr: o.addr, label: this.heapLabel(o), kind: o.kind, exc: o.kind === 'obj' && this.isThrowable(o.cls), fields, gc };
       };
       return order.map((o) => snap(o, false)).concat(garbage.map((o) => snap(o, true)));
@@ -2923,13 +4454,15 @@
       if (this.silent) return;
       if (this.trace.length >= MAX_STEPS) { this.traceTruncated = true; return; }
       this.silent++;
-      let ex;
-      try { ex = this.explain(kind, data || {}, line); } finally { this.silent--; }
-      this.trace.push({
-        line, kind, outLen: this.out.length,
-        frames: this.snapFrames(), statics: this.snapStatics(), heap: this.snapHeap(),
-        it: ex.it, ar: ex.ar,
-      });
+      try {
+        const ex = this.explain(kind, data || {}, line);
+        this.trace.push({
+          line, kind, outLen: this.out.length,
+          frames: this.snapFrames(), statics: this.snapStatics(), heap: this.snapHeap(),
+          files: this.fs.size ? Object.fromEntries(this.fs) : null,
+          it: ex.it, ar: ex.ar,
+        });
+      } finally { this.silent--; }
     }
 
     recordExpr(s, v) {
@@ -2937,7 +4470,7 @@
       if (e.k === 'assign') {
         const tgt = exprStr(e.target);
         const val = e.target.k === 'name' ? this.peekValue(e.target, v) : v;
-        this.record(s.line, 'assign', { target: tgt, val, op: e.op, isNew: e.value.k === 'new' || e.value.k === 'newarray', isField: e.target.k !== 'name' || !this.findVar(e.target.name), rhsName: e.value.k === 'name' });
+        this.record(s.line, 'assign', { input: this.lastInput, target: tgt, val, op: e.op, isNew: e.value.k === 'new' || e.value.k === 'newarray', isField: e.target.k !== 'name' || !this.findVar(e.target.name), rhsName: e.value.k === 'name' });
         return;
       }
       if (e.k === 'preinc' || e.k === 'postinc') {
@@ -2970,7 +4503,26 @@
         const f = o && o.fields.get('message');
         return f && f.value.t === 'String' ? ` ("${f.value.v}")` : '';
       };
+      if ((kind === 'decl' || kind === 'assign') && d.input) {
+        const who = d.name || d.target;
+        return {
+          it: `Lettura dell'input con \`${d.input.method}()\`: ${d.input.empty ? 'restituisce una riga VUOTA perché il precedente nextInt()/nextDouble() aveva lasciato il carattere di a capo (\\n) nel buffer' : `l'utente ha digitato ${d.input.val}`}; il valore viene salvato in \`${who}\`.`,
+          ar: d.input.empty
+            ? `القراءة بـ \`${d.input.method}()\` أعادت سطراً فارغاً! السبب أن \`nextInt()\` أو \`nextDouble()\` السابقة قرأت الرقم فقط وتركت محرف نهاية السطر (Enter) في المخزن المؤقت. الحل: استدعِ \`nextLine()\` إضافية بعد قراءة الرقم.`
+            : `قراءة إدخال المستخدم بالدالة \`${d.input.method}()\`: كتب المستخدم ${d.input.val}، وتُخزَّن القيمة في المتغير \`${who}\`.`,
+        };
+      }
       switch (kind) {
+        case 'lambdacall':
+          return {
+            it: `Esecuzione del corpo della lambda: nuovo frame con ${d.params.length ? d.params.map((p, i) => `\`${p}\` = ${disp(d.args[i])}`).join(', ') : 'nessun parametro'}.`,
+            ar: `تنفيذ جسم تعبير lambda: يُنشأ إطار جديد في الـStack ${d.params.length ? 'تُمرَّر فيه القيم ' + d.params.map((p, i) => `\`${p}\` = ${disp(d.args[i])}`).join('، ') : 'بدون معاملات'}.`,
+          };
+        case 'close':
+          return {
+            it: `try-with-resources: la risorsa \`${d.name}\` viene chiusa automaticamente con close() all'uscita dal blocco try.`,
+            ar: `try-with-resources: يتم إغلاق المورد \`${d.name}\` تلقائياً باستدعاء close() عند الخروج من كتلة try، حتى لو حدث استثناء.`,
+          };
         case 'call':
           if (d.main) {
             return {
@@ -3177,12 +4729,14 @@
   }
 
   // ───────────────────────── API pubblica ─────────────────────────
-  function run(src) {
-    const res = { ok: false, stdout: [], trace: [], error: null, exception: null, truncated: false };
+  function run(src, opts) {
+    const res = { ok: false, stdout: [], trace: [], error: null, exception: null, truncated: false, files: {} };
     let interp = null;
     try {
-      const types = new Parser(tokenize(src)).parseUnit();
-      interp = new Interp(src, types);
+      const parser = new Parser(tokenize(src));
+      const types = parser.parseUnit();
+      interp = new Interp(src, types, opts);
+      interp.typeParams = parser.typeParams;
       interp.validate();
       interp.start();
       res.ok = true;
@@ -3210,8 +4764,9 @@
       res.trace = interp.trace;
       res.truncated = interp.traceTruncated;
       res.exception = interp.uncaught;
+      res.files = Object.fromEntries(interp.fs);
     }
-    res.text = res.stdout.filter((c) => !c.err).map((c) => c.text).join('');
+    res.text = res.stdout.filter((c) => !c.err && !c.input).map((c) => c.text).join('');
     res.errText = res.stdout.filter((c) => c.err).map((c) => c.text).join('');
     return res;
   }

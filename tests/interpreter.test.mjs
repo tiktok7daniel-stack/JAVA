@@ -140,7 +140,7 @@ test('ciclo infinito interrotto dal limite di esecuzione', () => {
 });
 
 test('costrutto non supportato: messaggio dedicato', () => {
-  const r = run(main('        java.util.Scanner sc = new Scanner(System.in);'));
+  const r = run(main('        Thread t = new Thread();'));
   assert.equal(r.error.type, 'unsupported');
   assert.match(r.error.msg, /^Costrutto non supportato dal simulatore/);
 });
