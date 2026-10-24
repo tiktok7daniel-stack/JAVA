@@ -1,5 +1,5 @@
 /* CodeForge — Service worker: app shell offline (cache-first) e font in cache a runtime. */
-const VERSION = 'codeforge-v3';
+const VERSION = 'codeforge-v4';
 const SHELL = [
   './',
   './index.html',

@@ -267,6 +267,7 @@
       const isCode = it.kind === 'codice';
       let src;
       if (isCode) src = `<div class="sheet-source code"><span class="src-meta">${esc(it.meta || '')}</span>${EXP.highlight(it.src.trim())[0]}</div>`;
+      else if (it.kind === 'console') src = `<div class="sheet-source code"><span class="src-meta">${esc(it.meta || '')}</span><pre class="sheet-con">${esc(it.src)}</pre></div>`;
       else if (it.kind === 'termine') src = `<div class="sheet-source"><span class="src-meta">${esc(it.meta || 'Glossario')}</span><b>${esc(it.src)}</b>${it.code ? `<pre class="sheet-source code" style="margin:10px 0 0">${EXP.highlight(it.code).join('\n')}</pre>` : ''}</div>`;
       else src = `<div class="sheet-source"><span class="src-meta">${esc(it.meta || '')}</span><span class="it-text">${rich(it.src)}</span></div>`;
       const lint = (it.lint || []).map((f) => `<section class="sec lint"><h5>${icon('alert', 'sm')} ${esc(f.titolo)}</h5><p class="it-text">${rich(f.it)}</p>${arP(f.ar)}</section>`).join('');
@@ -306,7 +307,7 @@
       if (!b) return;
       const it = sheet.items[sheet.idx];
       if (b.dataset.act === 'speak') {
-        const parts = it.kind === 'codice' ? [it.t, it.bn] : it.kind === 'termine' ? [it.src] : [it.t, it.src];
+        const parts = it.kind === 'codice' ? [it.t, it.bn] : it.kind === 'termine' ? [it.src] : it.kind === 'console' ? [it.t] : [it.t, it.src];
         tts.speak(parts, 'it-IT', b);
       } else if (b.dataset.act === 'save') {
         toggleSaved(it);
@@ -342,6 +343,12 @@
       if (dy > 110) sheet.close();
     });
     void head;
+    document.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('span[data-grp][role="button"]')) {
+        e.preventDefault();
+        e.target.click();
+      }
+    });
     // Apertura da qualunque elemento cliccabile
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-grp]');
@@ -483,15 +490,17 @@
       return `<div class="err-box ${amber ? 'amber' : ''}"><h5>${icon('alert', 'sm')} ${res.error.type === 'compile' ? 'Errore di compilazione' : res.error.type === 'unsupported' ? 'Costrutto non supportato dal simulatore' : 'Errore del simulatore'}${res.error.line ? ` · riga ${res.error.line}` : ''}</h5><p class="it-text">${esc(res.error.msg)}</p>${res.error.ar ? arP(res.error.ar) : ''}</div>`;
     }
     const chunks = res.stdout.slice(0, outLen === undefined ? res.stdout.length : outLen);
-    let html = chunks.map((c) => `<span class="${c.err ? 'err' : ''}">${esc(c.text)}</span>`).join('');
+    const items = consoleItems(res);
+    const gid = res._conGid;
+    const tap = (i) => `data-grp="${gid}" data-i="${i}" role="button" tabindex="0"`;
+    let html = chunks.map((c, i) => `<span class="con-chunk ${c.err ? 'err' : ''} ${c.input ? 'in' : ''}" ${tap(i)}>${esc(c.text)}</span>`).join('');
     if (!html) html = '<span class="console-empty">(nessun output finora)</span>';
     if (final) {
       if (res.error && res.error.type === 'limit') html += `\n<span class="err">⛔ ${esc(res.error.msg)}</span>`;
-      else if (res.exception) html += '\n<span class="sys">Processo terminato con codice di uscita 1</span>';
-      else html += '\n<span class="sys">Processo terminato con codice di uscita 0</span>';
+      else html += `\n<span class="sys con-chunk" ${tap(items.length - 1)}>${esc(items[items.length - 1].src)}</span>`;
       if (res.truncated) html += '\n<span class="sys">(traccia passo-passo troncata ai primi passi)</span>';
     }
-    return `<pre class="console">${html}</pre>`;
+    return `<pre class="console">${html}</pre><div class="con-hint">${icon('lang', 'sm')}Tocca una riga della console per capirla <span lang="ar" dir="rtl">· اضغط على أي سطر لشرحه</span></div>`;
   }
 
   // ───────────────────────── Player passo-passo ─────────────────────────
@@ -631,11 +640,24 @@
   }
 
   const FASI = [
-    { n: 1, t: 'Teoria', ar: 'النظرية', ic: 'book' },
-    { n: 2, t: 'Micro-Quiz', ar: 'اختبار سريع', ic: 'target' },
-    { n: 3, t: 'Costruisci', ar: 'ابنِ الكود', ic: 'wand' },
-    { n: 4, t: 'Laboratorio', ar: 'المختبر', ic: 'code' },
-    { n: 5, t: 'Riepilogo', ar: 'الخلاصة', ic: 'trophy' },
+    { n: 1, t: 'Teoria', ar: 'النظرية', ic: 'book', faiIt: 'Leggi le idee e tocca una frase per la spiegazione.',
+      breve: 'اقرأ الفكرة، واضغط على أي جملة ليظهر شرحها بالعربية.',
+      fai: 'اقرأ الأفكار واحدة واحدة 📖 اضغط على أي فكرة أو سطر كود ليظهر شرحه بالعربية. بعدها اقرأ التشبيه وجرّب المثال بزر «Esegui passo-passo». عندما تنتهي اضغط «Avanti».' },
+    { n: 2, t: 'Quiz', ar: 'اختبار سريع', ic: 'target', faiIt: 'Rispondi alle domande e leggi la spiegazione.',
+      breve: 'أجب عن سؤالين لتتأكد أنك فهمت.',
+      fai: 'أجب عن الأسئلة ✍️ بعد كل إجابة يظهر الشرح، صحيحة كانت أم خاطئة. الإجابة الصحيحة من أول مرة تعطيك نقاطاً أكثر.',
+      blocco: 'Rispondi a tutte le domande', bloccoAr: 'أجب عن كل الأسئلة أولاً' },
+    { n: 3, t: 'Costruisci', ar: 'ابنِ الكود', ic: 'wand', faiIt: 'Completa gli spazi gialli e premi «Verifica».',
+      breve: 'أكمل الكلمات الناقصة في كود جاهز.',
+      fai: 'في الكود مربعات صفراء ناقصة 🧩 اكتب في كل مربع الكلمة الصحيحة، ثم اضغط «Verifica». إذا احترت اضغط «Suggerimento».',
+      blocco: 'Completa il codice', bloccoAr: 'أكمل الكود بشكل صحيح أولاً' },
+    { n: 4, t: 'Laboratorio', ar: 'المختبر', ic: 'code', faiIt: 'Scrivi il programma nell\'editor e premi «Verifica Esercizio».',
+      breve: 'اكتب برنامجاً صغيراً بنفسك، والتطبيق يصححه لك.',
+      fai: 'الآن دورك 💻 اقرأ المطلوب، ثم اضغط «Apri nel Laboratorio» لتكتب البرنامج في المحرر. اضغط «Verifica Esercizio» وسيصحح التطبيق عملك، ثم ارجع إلى الدرس.',
+      blocco: 'Supera (o salta) il laboratorio', bloccoAr: 'أنجز المختبر أو تخطَّه' },
+    { n: 5, t: 'Voto', ar: 'الخلاصة والدرجة', ic: 'trophy', faiIt: 'Ripassa il riepilogo e guarda il tuo voto.',
+      breve: 'راجع الخلاصة وشاهد درجتك من 30.',
+      fai: 'أحسنت، وصلت للنهاية 🎉 هذه خلاصة الدرس ودرجتك من 30. إذا حصلت على 18 أو أكثر نجحت، ويُفتح الدرس التالي.' },
   ];
   const VOTO_MINIMO = 18;
   const GIUDIZIO_AR = { '30 e Lode': 'ممتاز مع مرتبة الشرف', Ottimo: 'ممتاز', Buono: 'جيد', Sufficiente: 'مقبول', Respinto: 'غير ناجح' };
@@ -694,72 +716,6 @@
     if (chip) chip.style.setProperty('--rc', r.colore);
   }
 
-  function renderHome() {
-    const tot = allLessons.length;
-    const done = allLessons.filter(isDone).length;
-    const next = allLessons.find((x) => !isDone(x) && isUnlocked(x)) || allLessons[0];
-    const r = rankAttuale();
-    $('#view-lezioni').innerHTML = `
-      <div class="stack-lg">
-        <section class="hero card">
-          <div>
-            <div class="eyebrow">Percorso Accademico Strutturato · Programmazione I</div>
-            <h1 class="h1">Da Matricola a 30 e Lode.</h1>
-            <p class="lead">${P.livelli.length} livelli, ${tot} lezioni guidate in 5 fasi: teoria con analogie, micro-quiz, costruzione del codice, laboratorio con verifica automatica e voto in trentesimi.</p>
-            ${arP('مسار جامعي متدرّج من 9 مستويات: كل درس يمرّ بخمس مراحل (نظرية مع تشبيه، اختبار سريع، بناء الكود، مختبر بتصحيح آلي، ثم خلاصة ودرجة من 30). أكمل الدرس بنجاح لفتح الدرس التالي.')}
-            <div class="rank-card" style="--rc:${r.colore}">${icon('cap')}<div><small>Grado attuale</small><b>${esc(r.grado)}</b><span class="ar" dir="rtl" lang="ar">${esc(r.gradoAr)}</span></div></div>
-            <div class="row hero-actions">
-              <a class="btn primary" href="#/lezioni/${next.id}">${icon('play')}${done ? 'Continua' : 'Inizia'}: ${esc(next.titolo)}</a>
-              <label class="switch" title="Sblocca tutte le lezioni"><input type="checkbox" id="freeMode" ${state.libero ? 'checked' : ''}><span class="track"><i></i></span>Modalità libera</label>
-            </div>
-          </div>
-          ${ringSvg(done / tot, '#58A6FF', `${Math.round((done / tot) * 100)}%`, `${done}/${tot} lezioni`)}
-        </section>
-        <div class="tree">
-          ${P.livelli.map((liv) => {
-            const nd = liv.lezioni.filter(isDone).length;
-            const open = isUnlocked(liv.lezioni[0]);
-            const full = nd === liv.lezioni.length;
-            return `<section class="level ${open ? '' : 'locked'} ${full ? 'complete' : ''}" id="liv-${liv.numero}" style="--mc:${liv.colore}">
-              <div class="level-head">
-                <span class="level-badge">${icon(open ? liv.icona : 'lock', 'lg')}<b>${liv.numero}</b></span>
-                <div class="level-info">
-                  <div class="module-num">LIVELLO ${liv.numero} · ${esc(liv.grado)}</div>
-                  <div class="h3">${esc(liv.titolo)}</div>
-                  ${arP(liv.titoloAr + ' · ' + liv.gradoAr)}
-                  <div class="progress"><span style="width:${(nd / liv.lezioni.length) * 100}%"></span></div>
-                </div>
-                <span class="level-count">${full ? icon('trophy') : `${nd}/${liv.lezioni.length}`}</span>
-              </div>
-              <div class="path">
-                ${liv.lezioni.map((x) => findLesson(x.id)).map((l, i) => {
-                  const p = state.prog[l.id];
-                  const done = isDone(l), un = isUnlocked(l);
-                  const cur = un && !done;
-                  const v = done ? votoLezione(l) : null;
-                  return `<a class="node ${done ? 'done' : cur ? 'current' : 'locked'} ${i % 2 ? 'odd' : ''}" href="#/lezioni/${l.id}" data-lock="${un ? '' : '1'}">
-                    <span class="node-dot">${done ? (v.lode ? '30L' : v.voto) : un ? l.indice : icon('lock', 'sm')}</span>
-                    <span class="node-text"><b>Lezione ${l.indice}</b>${esc(l.titolo)}
-                      <small>${icon('clock', 'sm')} ${esc(l.durata)}${p && !done && p.fase > 1 ? ` · Fase ${p.fase}/5` : ''}${l.esame ? ' · Simulazione d\'esame' : ''}</small></span>
-                  </a>`;
-                }).join('')}
-              </div>
-            </section>`;
-          }).join('')}
-        </div>
-      </div>`;
-    $('#freeMode').addEventListener('change', (e) => {
-      state.libero = e.target.checked;
-      store.set('libero', state.libero);
-      toast(state.libero ? 'Modalità libera: tutte le lezioni sono sbloccate' : 'Percorso guidato: le lezioni si sbloccano in ordine');
-      renderHome();
-    });
-    $$('.node[data-lock="1"]').forEach((a) => a.addEventListener('click', (e) => {
-      e.preventDefault();
-      toast('🔒 Supera la lezione precedente (voto ≥ 18) per sbloccarla');
-    }));
-  }
-
   const lessonPlayers = [];
   const lessonBlocks = [];
 
@@ -809,7 +765,7 @@
       });
       lessonPlayers.push(pl);
       const cb = lessonBlocks[k];
-      pl.load(JVM.run(cb.codice, { input: cb.input, files: cb.files }), false);
+      pl.load(runJava(cb.codice, { input: cb.input, files: cb.files }), false);
       addXp(2);
     }));
     $$('[data-open]', root).forEach((b) => b.addEventListener('click', () => {
@@ -819,18 +775,168 @@
     }));
   }
 
+  /** Mascotte «Forgy» con un fumetto: la guida che dice allo studente cosa fare. */
+  function coach(ar, it, title) {
+    return `<div class="coach">
+      <span class="coach-avatar" aria-hidden="true"><svg viewBox="0 0 64 64"><use href="#brand-mark"/></svg></span>
+      <div class="coach-bubble">
+        ${title ? `<div class="coach-title">${esc(title)}</div>` : ''}
+        <p class="ar" dir="rtl" lang="ar">${rich(ar)}</p>
+        ${it ? `<p class="coach-it">${rich(it)}</p>` : ''}
+      </div>
+    </div>`;
+  }
+
+  /** Le 5 tappe della lezione come piccola traccia orizzontale. */
+  function stepsTrack(fase, tutte) {
+    return `<ol class="track">${FASI.map((f) => {
+      const ok = tutte || f.n < fase;
+      return `<li class="${ok ? 'ok' : f.n === fase ? 'on' : ''}"><span>${icon(ok ? 'check' : f.ic, 'sm')}</span><small>${f.t}</small></li>`;
+    }).join('')}</ol>`;
+  }
+
+  const lessonStarted = (l) => {
+    const p = state.prog[l.id];
+    return !!(p && (p.started || p.fase > 1 || p.superata));
+  };
+
+  function renderHome() {
+    const tot = allLessons.length;
+    const done = allLessons.filter(isDone).length;
+    const next = allLessons.find((x) => !isDone(x) && isUnlocked(x)) || allLessons[allLessons.length - 1];
+    const r = rankAttuale();
+    const p = state.prog[next.id];
+    const fase = lessonStarted(next) ? p.fase : 0;
+    const finito = done === tot;
+    const liv = next.livello;
+    const saluto = finito
+      ? coach('مبروك! 🎓 أنهيت المسار كاملاً. يمكنك إعادة أي درس لتحسين درجتك.', 'Complimenti: hai completato tutto il percorso!')
+      : done === 0 && !fase
+        ? coach('أهلاً بك! 👋 أنا Forgy وسأرافقك في كل درس. طريقك يبدأ من هنا: اضغط الزر الأزرق لتبدأ درسك الأول.', 'Ciao! Il tuo percorso inizia qui: premi il pulsante blu.')
+        : coach(`مرحباً بعودتك! أنهيت ${done} من ${tot} درساً. تابع من حيث توقفت 💪`, 'Bentornato! Riprendi da dove eri rimasto.');
+    $('#view-lezioni').innerHTML = `
+      <div class="home">
+        ${saluto}
+        <section class="today" style="--mc:${liv.colore}">
+          <div class="today-label">${icon('target', 'sm')}${finito ? 'Ripasso' : 'La tua lezione di oggi'} <span class="ar" dir="rtl" lang="ar">· ${finito ? 'مراجعة' : 'درس اليوم'}</span></div>
+          <div class="today-meta">Livello ${liv.numero} · Lezione ${next.indice} di ${tot} · ${icon('clock', 'sm')} ${esc(next.durata)}</div>
+          <h2 class="today-title">${esc(next.titolo)}</h2>
+          <ul class="goals">${next.obiettivi.map((o) => `<li>${icon('check', 'sm')}${esc(o)}</li>`).join('')}</ul>
+          ${stepsTrack(fase || 1, isDone(next))}
+          <a class="btn primary big block" href="#/lezioni/${next.id}">${icon('play')}${fase ? `Continua · Fase ${fase} di 5` : 'Inizia la lezione'}</a>
+        </section>
+        <div class="home-stats">
+          <div class="stat-tile" style="--rc:${r.colore}">${icon('cap')}<b>${esc(r.grado)}</b><small>Grado · <span lang="ar">الرتبة</span></small></div>
+          <div class="stat-tile">${icon('book')}<b>${done}<i>/${tot}</i></b><small>Lezioni · <span lang="ar">الدروس</span></small></div>
+          <div class="stat-tile">${icon('zap')}<b>${state.xp}</b><small>XP · <span lang="ar">النقاط</span></small></div>
+        </div>
+        <section class="path-sec">
+          <div class="sec-head">
+            <h2 class="h2">Il tuo percorso</h2>
+            ${arP('9 مستويات بالترتيب. كل درس تنجح فيه (18 من 30 أو أكثر) يفتح الدرس الذي بعده 🔓', 'sec-sub')}
+          </div>
+          <div class="levels">
+            ${P.livelli.map((lv) => {
+              const lez = lv.lezioni.map((x) => findLesson(x.id));
+              const nd = lez.filter(isDone).length;
+              const aperto = isUnlocked(lez[0]);
+              const full = nd === lez.length;
+              return `<details class="lv ${aperto ? '' : 'locked'} ${full ? 'complete' : ''}" id="liv-${lv.numero}" style="--mc:${lv.colore}" ${lv.numero === liv.numero ? 'open' : ''}>
+                <summary class="lv-head">
+                  <span class="lv-badge">${icon(full ? 'trophy' : aperto ? lv.icona : 'lock')}</span>
+                  <span class="lv-info"><small>Livello ${lv.numero}</small><b>${esc(lv.titolo)}</b><span class="ar" dir="rtl" lang="ar">${esc(lv.titoloAr)}</span></span>
+                  <span class="lv-count"><b>${nd}/${lez.length}</b><span class="mini-bar"><i style="width:${(nd / lez.length) * 100}%"></i></span></span>
+                  <span class="lv-chev">${icon('right', 'sm')}</span>
+                </summary>
+                <div class="lv-body">
+                  <p class="lv-goal">${icon('cap', 'sm')} Completa il livello e diventi <b>${esc(lv.grado)}</b> <span class="ar" dir="rtl" lang="ar">(${esc(lv.gradoAr)})</span></p>
+                  <ol class="trail">
+                    ${lez.map((l) => {
+                      const d = isDone(l), un = isUnlocked(l);
+                      const pl = state.prog[l.id];
+                      const v = d ? votoLezione(l) : null;
+                      const stato = d ? `Superata · ${v.lode ? '30 e Lode' : v.voto + '/30'}` : !un ? 'Bloccata' : lessonStarted(l) ? `In corso · Fase ${pl.fase} di 5` : 'Da fare';
+                      const cls = d ? 'done' : un ? 'current' : 'locked';
+                      return `<li><a class="stop ${cls}" href="#/lezioni/${l.id}" data-lock="${un ? '' : '1'}">
+                        <span class="stop-dot">${d ? icon('check') : un ? l.indice : icon('lock', 'sm')}</span>
+                        <span class="stop-text"><b>${esc(l.titolo)}</b><small>${stato}${l.esame ? ' · Esame' : ''}</small></span>
+                        ${cls === 'current' ? `<span class="stop-go">${icon('play', 'sm')}</span>` : ''}
+                      </a></li>`;
+                    }).join('')}
+                  </ol>
+                </div>
+              </details>`;
+            }).join('')}
+          </div>
+        </section>
+        <section class="home-tools">
+          <label class="switch" title="Sblocca tutte le lezioni"><input type="checkbox" id="freeMode" ${state.libero ? 'checked' : ''}><span class="track-sw"><i></i></span><span>Modalità libera <small class="ar" dir="rtl" lang="ar">(فتح كل الدروس)</small></span></label>
+          <button type="button" class="btn sm ghost" id="btnTutorial">${icon('info', 'sm')}Rivedi il tutorial</button>
+        </section>
+      </div>`;
+    $('#freeMode').addEventListener('change', (e) => {
+      state.libero = e.target.checked;
+      store.set('libero', state.libero);
+      toast(state.libero ? 'Modalità libera: tutte le lezioni sono sbloccate' : 'Percorso guidato: le lezioni si sbloccano in ordine');
+      renderHome();
+    });
+    $('#btnTutorial').addEventListener('click', () => tutorial.open());
+    $$('.stop[data-lock="1"]').forEach((a) => a.addEventListener('click', (e) => {
+      e.preventDefault();
+      toast('🔒 Supera prima la lezione precedente (voto ≥ 18)');
+    }));
+  }
+
+  // Schermata «Cosa imparerai oggi» prima della Fase 1
+  function renderIntro(l) {
+    const liv = l.livello;
+    const min = parseInt(l.durata, 10) || 10;
+    $('#view-lezioni').innerHTML = `
+      <article class="lesson-page" style="--mc:${liv.colore}">
+        <a class="back-link" href="#/lezioni">${icon('left', 'sm')}Percorso</a>
+        <header class="intro-head">
+          <span class="intro-badge">${icon(liv.icona, 'lg')}</span>
+          <div class="today-meta">Livello ${liv.numero} · ${esc(liv.titolo)} · Lezione ${l.indice}</div>
+          <h1 class="h1">${esc(l.titolo)}</h1>
+          <div class="row"><span class="pill neutral">${icon('clock', 'sm')} ${esc(l.durata)}</span><span class="pill neutral">${icon('layers', 'sm')} 5 fasi</span>${isDone(l) ? '<span class="pill ok">✓ Superata</span>' : ''}</div>
+        </header>
+        ${coach(`قبل أن نبدأ: هذا ما ستتعلمه اليوم ✨ الدرس يأخذ حوالي ${min} دقيقة، ويمرّ بخمس خطوات قصيرة. لا تقلق، سأقول لك في كل خطوة ماذا تفعل.`, 'Prima di iniziare: ecco cosa imparerai oggi e come funziona la lezione.')}
+        <section class="card">
+          <h3 class="card-title">${icon('target', 'sm')}Cosa imparerai oggi <span class="ar" dir="rtl" lang="ar">ماذا ستتعلم اليوم</span></h3>
+          <ul class="goals">${l.obiettivi.map((o) => `<li>${icon('check', 'sm')}${esc(o)}</li>`).join('')}</ul>
+          <div class="concepts"><small>Concetti chiave:</small>${l.teoria.map((f) => `<span class="concept">${esc(f.t)}</span>`).join('')}</div>
+        </section>
+        <section class="card">
+          <h3 class="card-title">${icon('layers', 'sm')}Come funziona la lezione <span class="ar" dir="rtl" lang="ar">كيف يسير الدرس</span></h3>
+          <ol class="how">${FASI.map((f) => `<li><span class="how-n">${icon(f.ic, 'sm')}</span><div><b>${f.n}. ${f.t}</b> <small>${esc(f.faiIt)}</small><p class="ar" dir="rtl" lang="ar">${rich(f.breve)}</p></div></li>`).join('')}</ol>
+        </section>
+        <div class="lesson-bar">
+          <a class="btn ghost" href="#/lezioni">${icon('left')}<span class="hide-xs">Percorso</span></a>
+          <span class="bar-hint"></span>
+          <button type="button" class="btn primary big" id="btnStart">${icon('play')}${lessonStarted(l) ? 'Continua' : 'Inizia la lezione'}</button>
+        </div>
+      </article>`;
+    $('#btnStart').addEventListener('click', () => {
+      const p = prog(l.id);
+      if (!p.started) { p.started = true; saveProg(); }
+      location.hash = `#/lezioni/${l.id}/${p.fase || 1}`;
+    });
+  }
+
   function renderLesson(lid, faseReq) {
     const l = findLesson(lid);
     if (!l) { location.hash = '#/lezioni'; return; }
     if (!isUnlocked(l)) { toast('🔒 Lezione bloccata: supera prima quella precedente'); location.hash = '#/lezioni'; return; }
-    lessonPlayers.forEach((p) => p.stop());
+    lessonPlayers.forEach((x) => x.stop());
     lessonPlayers.length = 0;
     lessonBlocks.length = 0;
+    if (faseReq === 0 || (!faseReq && !lessonStarted(l))) { renderIntro(l); return; }
     const p = prog(l.id);
+    if (!p.started) { p.started = true; saveProg(); }
     const fase = Math.max(1, Math.min(faseReq || p.fase || 1, p.fase || 1));
     const liv = l.livello;
-    const idx = allLessons.indexOf(l);
-    const next = allLessons[idx + 1];
+    const next = allLessons[allLessons.indexOf(l) + 1];
+    const F = FASI[fase - 1];
     let body = '';
     if (fase === 1) body = fase1Html(l);
     else if (fase === 2) body = fase2Html(l);
@@ -838,42 +944,37 @@
     else if (fase === 4) body = fase4Html(l);
     else body = fase5Html(l, next);
     $('#view-lezioni').innerHTML = `
-      <article class="lesson stack-lg" style="--mc:${liv.colore}">
-        <div class="stack-sm">
-          <nav class="crumbs"><a href="#/lezioni">Percorso</a>${icon('right')}<a href="#/lezioni" data-liv="${liv.numero}">Livello ${liv.numero}</a>${icon('right')}<span>Lezione ${l.indice}</span></nav>
-          <div class="eyebrow" style="color:${liv.colore}">Livello ${liv.numero} · ${esc(liv.titolo)}</div>
-          <h1 class="h1">${esc(l.titolo)}</h1>
-          <div class="row"><span class="pill neutral">${icon('clock', 'sm')} ${esc(l.durata)}</span>${isDone(l) ? `<span class="pill ok">✓ Superata · ${votoLezione(l).lode ? '30 e Lode' : votoLezione(l).voto + '/30'}</span>` : ''}
-            <span class="hint-chip">${icon('lang', 'sm')} Tocca ogni frase o riga <span class="ar" dir="rtl" lang="ar">· اضغط للشرح بالعربية</span></span></div>
-        </div>
-        <div class="phases">
-          <div class="phase-top"><b>Fase ${fase}/5</b> · ${FASI[fase - 1].t} <span class="ar" dir="rtl" lang="ar">${FASI[fase - 1].ar}</span></div>
-          <div class="phase-bar"><span style="width:${(fase / 5) * 100}%"></span></div>
-          <ol class="stepper">${FASI.map((f) => {
-            const reach = f.n <= p.fase;
-            return `<li><button type="button" class="step ${f.n === fase ? 'on' : ''} ${f.n < p.fase || (f.n === 5 && isDone(l)) ? 'ok' : ''}" data-fase="${f.n}" ${reach ? '' : 'disabled'} aria-label="Fase ${f.n}: ${f.t}">${icon(f.n < p.fase ? 'check' : reach ? f.ic : 'lock', 'sm')}<span>${f.t}</span></button></li>`;
-          }).join('')}</ol>
-        </div>
+      <article class="lesson-page" style="--mc:${liv.colore}">
+        <header class="lesson-head">
+          <a class="icon-btn" href="#/lezioni" aria-label="Torna al percorso">${icon('left')}</a>
+          <div class="lh-text"><small>Lezione ${l.indice} · Livello ${liv.numero}</small><b>${esc(l.titolo)}</b></div>
+          <a class="icon-btn" href="#/lezioni/${l.id}/0" aria-label="Cosa imparerai" title="Cosa imparerai oggi">${icon('info')}</a>
+        </header>
+        <nav class="seg-steps" aria-label="Fasi della lezione">${FASI.map((f) => {
+          const reach = f.n <= p.fase;
+          const ok = f.n < p.fase || (f.n === 5 && isDone(l));
+          return `<button type="button" class="seg-step ${f.n === fase ? 'on' : ''} ${ok ? 'ok' : ''}" data-fase="${f.n}" ${reach ? '' : 'disabled'} aria-current="${f.n === fase ? 'step' : 'false'}"><i></i><span>${icon(ok && f.n !== fase ? 'check' : reach ? f.ic : 'lock', 'sm')}${f.t}</span></button>`;
+        }).join('')}</nav>
+        ${coach(F.fai, F.faiIt, `Fase ${fase} di 5 · ${F.t}`)}
         <div class="phase-body" id="phaseBody">${body}</div>
-        <div class="lesson-nav">
-          ${fase > 1 ? `<a class="btn ghost" href="#/lezioni/${l.id}/${fase - 1}">${icon('left')}Fase ${fase - 1}</a>` : '<a class="btn ghost" href="#/lezioni">' + icon('left') + 'Percorso</a>'}
-          ${fase < 5 ? `<button type="button" class="btn primary" id="btnAvanti" ${puoAvanzare(l, fase) ? '' : 'disabled'}>Avanti: ${FASI[fase].t}${icon('right')}</button>` : '<span></span>'}
+        <div class="lesson-bar">
+          ${fase > 1 ? `<a class="btn ghost" href="#/lezioni/${l.id}/${fase - 1}">${icon('left')}<span class="hide-xs">Indietro</span></a>` : `<a class="btn ghost" href="#/lezioni/${l.id}/0">${icon('left')}<span class="hide-xs">Introduzione</span></a>`}
+          <span class="bar-hint" id="barHint"></span>
+          ${fase < 5 ? `<button type="button" class="btn primary big" id="btnAvanti">Avanti${icon('right')}</button>` : `<a class="btn big" href="#/lezioni">${icon('tree')}Percorso</a>`}
         </div>
       </article>`;
     const root = $('#view-lezioni');
-    $$('.step[data-fase]', root).forEach((b) => b.addEventListener('click', () => { location.hash = `#/lezioni/${l.id}/${b.dataset.fase}`; }));
-    const crumbLiv = $('[data-liv]', root);
-    crumbLiv.addEventListener('click', (e) => {
-      e.preventDefault();
-      location.hash = '#/lezioni';
-      setTimeout(() => { const s = $('#liv-' + crumbLiv.dataset.liv); if (s) s.scrollIntoView({ block: 'start' }); }, 60);
-    });
+    $$('.seg-step[data-fase]', root).forEach((b) => b.addEventListener('click', () => { location.hash = `#/lezioni/${l.id}/${b.dataset.fase}`; }));
     const av = $('#btnAvanti');
     if (av) av.addEventListener('click', () => {
-      if (!puoAvanzare(l, fase)) return;
+      if (!puoAvanzare(l, fase)) {
+        toast(F.blocco);
+        return;
+      }
       if (p.fase < fase + 1) { p.fase = fase + 1; saveProg(); addXp(5, `Fase ${fase} completata`); }
       location.hash = `#/lezioni/${l.id}/${fase + 1}`;
     });
+    refreshAvanti(l, fase);
     wireCodeBlocks(root);
     const say = $('[data-say-ar]', root);
     if (say) say.addEventListener('click', (e) => tts.speak([l.analogia.ar], 'ar-SA', e.currentTarget));
@@ -892,7 +993,10 @@
   }
   function refreshAvanti(l, fase) {
     const b = $('#btnAvanti');
-    if (b) b.disabled = !puoAvanzare(l, fase);
+    const h = $('#barHint');
+    const ok = puoAvanzare(l, fase);
+    if (b) b.classList.toggle('waiting', !ok);
+    if (h) h.innerHTML = ok ? (fase < 5 ? `<span class="ok-hint">${icon('check', 'sm')}Pronto!</span>` : '') : `${esc(FASI[fase - 1].blocco)}<span class="ar" dir="rtl" lang="ar">${esc(FASI[fase - 1].bloccoAr)}</span>`;
   }
 
   // Fase 1 — Teoria guidata, analogia, esempio con debugger e regola di Buona Norma
@@ -901,10 +1005,11 @@
     const gid = registerGroup(items);
     const e = l.esempio;
     return `
-      <section class="card prose">
-        <div class="section-title">Teoria guidata</div>
-        <ul class="obiettivi">${l.obiettivi.map((o) => `<li>${icon('target', 'sm')}${esc(o)}</li>`).join('')}</ul>
-        ${items.map((it, i) => `<button type="button" class="tappable${isSaved(it) ? ' saved' : ''}" data-grp="${gid}" data-i="${i}"><span class="it-text">${rich(it.src)}</span><span class="term-hint">${esc(it.t)}</span><span class="tap-badge">${icon('lang')}</span></button>`).join('')}
+      <section class="ideas">
+        ${items.map((it, i) => `<button type="button" class="idea tappable${isSaved(it) ? ' saved' : ''}" data-grp="${gid}" data-i="${i}">
+          <span class="idea-n">${i + 1}</span>
+          <span class="idea-body"><span class="idea-term">${esc(it.t)}</span><span class="it-text">${rich(it.src)}</span><span class="idea-tap">${icon('lang', 'sm')}Tocca per la spiegazione · <span lang="ar">اضغط للشرح</span></span></span>
+        </button>`).join('')}
       </section>
       <section class="analogy">
         <div class="analogy-ic">${icon('sparkle')}</div>
@@ -998,7 +1103,7 @@
   function costruisciOkHtml(l) {
     const c = l.costruisci;
     const codice = P.completaCostruisci(c.codice);
-    const res = JVM.run(codice, { input: c.input, files: c.files });
+    const res = runJava(codice, { input: c.input, files: c.files });
     return `<div class="result-banner ok">${icon('trophy')}Codice completo! Ecco l'esecuzione nel simulatore JVM.</div>
       ${arP('أحسنت! الكود مكتمل، وهذه نتيجة تنفيذه في محاكي JVM.')}
       <div class="code-block" style="margin-top:10px">${consoleHtml(res, undefined, true)}</div>`;
@@ -1216,10 +1321,13 @@
           <div><div class="eyebrow">Ambiente di sviluppo</div><h1 class="h1">Editor Java</h1>
             <p class="lead">Scrivi il codice, poi «Analizza & Esegui» oppure seguilo riga per riga con il debugger.</p>
             ${arP('اكتب الكود ثم اضغط «Analizza & Esegui»، أو نفّذه خطوة بخطوة لمشاهدة الـStack والـHeap. في «Vista interattiva» اضغط على أي سطر لشرحه بالعربية.')}</div>
+          <div class="ed-top-actions">
+          <button type="button" class="btn sm" id="edHelp">${icon('info', 'sm')}Come si usa <span lang="ar">· كيف أستخدمه</span></button>
           <select class="select" id="exSel" aria-label="Carica un esempio">
             <option value="">Carica un esempio…</option>
             ${P.esempi.map((e) => `<option value="${e.id}">${esc(e.titolo)}</option>`).join('')}
           </select>
+          </div>
         </div>
         <div class="editor-layout">
           <div class="pane card pane-code">
@@ -1281,6 +1389,7 @@
       this.ta.addEventListener('input', () => this.onInput());
       this.ta.addEventListener('keydown', (e) => this.onKey(e));
       this.ta.addEventListener('click', () => this.ensureCaret());
+      $('#edHelp').addEventListener('click', () => tour.start(EDITOR_TOUR));
       $('#exSel').addEventListener('change', (e) => {
         const ex = P.esempi.find((x) => x.id === e.target.value);
         if (ex) {
@@ -1365,6 +1474,7 @@
 
     show() {
       if (!this.built) this.build();
+      if (!store.get('tourEditor', false) && store.get('tutorial', false)) setTimeout(() => { if (location.hash.startsWith('#/editor')) tour.start(EDITOR_TOUR); }, 450);
       requestAnimationFrame(() => {
         this.syncSize();
         memHosts.forEach((h) => h.isConnected && drawArrows(h, h.dataset.memId));
@@ -1614,7 +1724,7 @@
     run(debug) {
       this.code = this.ta.value;
       this.lint();
-      const res = JVM.run(this.code, { input: this.input, files: this.files });
+      const res = runJava(this.code, { input: this.input, files: this.files });
       this.lastRes = res;
       this.lastRunCode = this.code;
       this.player.load(res, !debug);
@@ -1698,7 +1808,7 @@
     },
 
     rerunQuiet() {
-      const res = JVM.run(this.code, { input: this.input, files: this.files });
+      const res = runJava(this.code, { input: this.input, files: this.files });
       this.lastRes = res;
       this.lastRunCode = this.code;
       this.player.load(res, true);
@@ -1745,7 +1855,7 @@
     checkExercise() {
       const { l } = this.exercise;
       this.code = this.ta.value;
-      const r = VER.verificaEsercizio(this.code, l.laboratorio, { run: JVM.run, analizza: LINT.analizza });
+      const r = VER.verificaEsercizio(this.code, l.laboratorio, { run: runJava, analizza: LINT.analizza });
       this.lint();
       this.lastRes = r.esito;
       this.lastRunCode = this.code;
@@ -1926,7 +2036,7 @@
     $('#qNextQ').addEventListener('click', () => { exam.idx++; renderExamQ(); });
     const r = $('#qRun');
     if (r) r.addEventListener('click', () => {
-      const res = JVM.run(q.codice);
+      const res = runJava(q.codice);
       $('#qRunOut').innerHTML = `<div class="code-block" style="margin-top:10px">${consoleHtml(res, undefined, true)}</div>`;
     });
   }
@@ -2034,6 +2144,282 @@
     }
   }
 
+  // ───────────────────────── Guida: tutorial iniziale e tour dell'editor ─────────────────────────
+  const TUTORIAL = [
+    {
+      ic: 'brand', t: 'Benvenuto in CodeForge',
+      ar: 'أهلاً بك! 👋 هنا ستتعلم البرمجة بلغة **Java** خطوة بخطوة، كما تُدرَّس في الجامعات الإيطالية. الدروس مكتوبة بالإيطالية، لكن **الشرح دائماً بالعربية**.',
+      it: 'Impara Java come all\'università italiana, con le spiegazioni in arabo.',
+    },
+    {
+      ic: 'tree', t: 'Un percorso chiaro',
+      ar: 'الطريق مقسّم إلى **9 مستويات و38 درساً**، من الصفر حتى مستوى الامتحان. تبدأ بالدرس الأول، وكل درس تنجح فيه **يفتح الدرس التالي** 🔓. وكلما أنهيت مستوى ترتفع رتبتك الجامعية 🎓.',
+      it: 'Le lezioni si sbloccano una dopo l\'altra.',
+      demo: () => `<ol class="tut-trail"><li class="done">${icon('check', 'sm')}</li><li class="cur">2</li><li>${icon('lock', 'sm')}</li><li>${icon('lock', 'sm')}</li></ol>`,
+    },
+    {
+      ic: 'layers', t: 'Ogni lezione in 5 passi',
+      ar: 'كل درس له نفس الخطوات الخمس، فتعرف دائماً أين أنت وماذا بقي:',
+      it: 'Teoria → Quiz → Costruisci → Laboratorio → Voto.',
+      demo: () => `<ol class="tut-steps">${FASI.map((f) => `<li><span>${icon(f.ic, 'sm')}</span><b>${f.t}</b><small dir="rtl" lang="ar">${rich(f.breve)}</small></li>`).join('')}</ol>`,
+    },
+    {
+      ic: 'lang', t: 'Tocca per capire',
+      ar: 'أي جملة أو سطر كود عليه هذه العلامة ' + '<span class="tut-badge">文A</span>' + ' اضغط عليه، وستظهر نافذة فيها: **معنى الكلمة**، و**الشرح التفصيلي** بالعربية، و**القاعدة الصحيحة** لكتابة الكود. جرّب الآن 👇',
+      it: 'Tocca una frase o una riga di codice: arriva la spiegazione in arabo.',
+      demo: () => `<button type="button" class="tut-try" id="tutTry"><code dir="ltr"><span class="tk-kw">int</span> eta = <span class="tk-num">20</span>;</code><span class="tap-badge">${icon('lang')}</span></button>`,
+    },
+    {
+      ic: 'terminal', t: 'Editor e Console',
+      ar: 'في قسم **Editor Java** تكتب الكود بنفسك ثم تضغط ▶ لتشغيله. ما يطبعه البرنامج يظهر في **الـConsole**، و**اضغط على أي سطر في الـConsole** لتعرف من أين جاء ومعناه. وزر **Passo-Passo** يشغّل البرنامج سطراً سطراً ويريك الذاكرة.',
+      it: 'Scrivi, esegui e tocca la console per capire ogni riga.',
+    },
+    {
+      ic: 'trophy', t: 'Voto, XP e grado',
+      ar: 'كل درس يعطيك **درجة من 30** مثل الجامعة الإيطالية: **18 = نجاح**، و**30 e Lode** = امتياز. تجمع أيضاً نقاط XP وأيام الدراسة المتتالية 🔥. إذا نسيت شيئاً اضغط زر **?** في الأعلى لترى هذا الشرح مرة أخرى.',
+      it: 'Ogni lezione ha un voto in trentesimi. Pronto? Iniziamo!',
+    },
+  ];
+
+  const tutorial = {
+    i: 0,
+    el: null,
+    open(start) {
+      this.i = start || 0;
+      if (!this.el) {
+        this.el = document.createElement('div');
+        this.el.className = 'tut';
+        this.el.setAttribute('role', 'dialog');
+        this.el.setAttribute('aria-modal', 'true');
+        this.el.setAttribute('aria-label', 'Tutorial');
+        document.body.appendChild(this.el);
+        this.el.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-tut]');
+          if (b) {
+            const a = b.dataset.tut;
+            if (a === 'next') this.go(1);
+            else if (a === 'prev') this.go(-1);
+            else if (a === 'skip' || a === 'end') this.close(a === 'end');
+            else if (a === 'dot') { this.i = +b.dataset.k; this.render(); }
+            return;
+          }
+          if (e.target.closest('#tutTry')) {
+            const it = { kind: 'codice', src: 'int eta = 20;', meta: 'Esempio · tutorial', ...EXP.spiega('int eta = 20;') };
+            sheet.open(registerGroup([it]), 0);
+          }
+        });
+        document.addEventListener('keydown', (e) => {
+          if (!this.el || this.el.hidden || sheet.isOpen) return;
+          if (e.key === 'ArrowRight') this.go(1);
+          else if (e.key === 'ArrowLeft') this.go(-1);
+          else if (e.key === 'Escape') this.close(false);
+        });
+      }
+      this.el.hidden = false;
+      document.body.classList.add('no-scroll');
+      this.render();
+    },
+    go(d) {
+      const n = this.i + d;
+      if (n < 0) return;
+      if (n >= TUTORIAL.length) { this.close(true); return; }
+      this.i = n;
+      this.render();
+    },
+    close(start) {
+      store.set('tutorial', true);
+      this.el.hidden = true;
+      document.body.classList.remove('no-scroll');
+      tts.stop();
+      if (start) {
+        const next = allLessons.find((x) => !isDone(x) && isUnlocked(x)) || allLessons[0];
+        location.hash = '#/lezioni/' + next.id;
+      }
+    },
+    render() {
+      const s = TUTORIAL[this.i];
+      const last = this.i === TUTORIAL.length - 1;
+      const art = s.ic === 'brand' ? '<svg viewBox="0 0 64 64"><use href="#brand-mark"/></svg>' : icon(s.ic);
+      this.el.innerHTML = `
+        <div class="tut-card">
+          <button type="button" class="tut-skip" data-tut="skip">Salta <span lang="ar">· تخطَّ</span></button>
+          <div class="tut-art ${s.ic === 'brand' ? 'brand' : ''}">${art}</div>
+          <div class="tut-count">${this.i + 1} / ${TUTORIAL.length}</div>
+          <h2 class="tut-title">${esc(s.t)}</h2>
+          <p class="tut-ar ar" dir="rtl" lang="ar">${s.ar.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/<b>([^<]*)<\/b>/g, (m, x) => `<b>${isolateLatin(x)}</b>`)}</p>
+          ${s.demo ? `<div class="tut-demo">${s.demo()}</div>` : ''}
+          <p class="tut-it">${esc(s.it)}</p>
+          <div class="tut-dots">${TUTORIAL.map((_, k) => `<button type="button" class="${k === this.i ? 'on' : ''}" data-tut="dot" data-k="${k}" aria-label="Pagina ${k + 1}"></button>`).join('')}</div>
+          <div class="tut-actions">
+            ${this.i ? `<button type="button" class="btn ghost" data-tut="prev">${icon('left')}Indietro</button>` : '<span></span>'}
+            ${last ? `<button type="button" class="btn primary big" data-tut="end">${icon('play')}Iniziamo!</button>` : `<button type="button" class="btn primary big" data-tut="next">Avanti${icon('right')}</button>`}
+          </div>
+        </div>`;
+      const btn = $('[data-tut="next"], [data-tut="end"]', this.el);
+      if (btn) btn.focus({ preventScroll: true });
+    },
+  };
+
+  const EDITOR_TOUR = [
+    { sel: '#ce', t: 'L\'area del codice', ar: 'هنا تكتب برنامج Java. الألوان تساعدك على القراءة، والأرقام على اليسار هي أرقام الأسطر. السطر الذي فيه ملاحظة يظهر بلون مختلف.' },
+    { sel: '#btnRun', t: 'Analizza & Esegui', ar: 'هذا أهم زر: يشغّل البرنامج ويصحّح طريقة كتابته. النتيجة تظهر في الـConsole، ودرجتك من 30 في «Feedback». (اختصار لوحة المفاتيح: Ctrl + Enter)' },
+    { sel: '#btnDebug', t: 'Passo-Passo (Debug)', ar: 'يشغّل البرنامج سطراً بعد سطر، ويريك ماذا يحدث في الذاكرة (Stack و Heap) مع شرح كل خطوة بالعربية. استخدمه عندما لا تفهم لماذا يتصرف الكود هكذا.' },
+    { sel: '[data-mode="inspect"]', t: 'Vista interattiva', ar: 'اضغط هنا، ثم اضغط على أي سطر من الكود ليظهر لك شرحه بالعربية. للعودة إلى الكتابة اضغط «Modifica».' },
+    { sel: '#ioPanel', t: 'Input (stdin) e File', ar: 'إذا كان برنامجك يقرأ من لوحة المفاتيح بـ Scanner، اكتب هنا ما سيُدخله المستخدم (كل قيمة في سطر). ويمكنك أيضاً إضافة ملفات نصية يقرؤها البرنامج.' },
+    { sel: '.out-tabs', t: 'Console · Feedback · Memoria', ar: 'Console: ما يطبعه البرنامج. Feedback: ملاحظات الأستاذ ودرجتك مع زر التصحيح التلقائي. Memoria: صورة الذاكرة بعد التشغيل.' },
+    { sel: '#edConsole', t: 'Tocca la console', ar: 'بعد التشغيل اضغط على أي سطر في الـConsole: سأخبرك أي تعليمة طبعته، وماذا يعني الخطأ إن وُجد، ومعنى «codice di uscita».' },
+    { sel: '#edHelp', t: 'Rivedi la guida', ar: 'إذا نسيت شيئاً اضغط هذا الزر في أي وقت لترى هذه الجولة مرة أخرى. بالتوفيق! 💪' },
+  ];
+
+  const tour = {
+    steps: [], i: 0, el: null,
+    start(steps) {
+      this.steps = steps.filter((s) => $(s.sel));
+      if (!this.steps.length) return;
+      this.i = 0;
+      if (!this.el) {
+        this.el = document.createElement('div');
+        this.el.className = 'tour';
+        this.el.innerHTML = '<div class="tour-spot"></div><div class="tour-tip" role="dialog" aria-modal="true"></div>';
+        document.body.appendChild(this.el);
+        this.el.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-tour]');
+          if (!b) return;
+          if (b.dataset.tour === 'next') this.go(1);
+          else if (b.dataset.tour === 'prev') this.go(-1);
+          else this.end();
+        });
+        window.addEventListener('resize', () => { if (!this.el.hidden) this.place(); });
+        document.addEventListener('keydown', (e) => {
+          if (!this.el || this.el.hidden) return;
+          if (e.key === 'Escape') this.end();
+          else if (e.key === 'ArrowRight') this.go(1);
+          else if (e.key === 'ArrowLeft') this.go(-1);
+        });
+      }
+      this.el.hidden = false;
+      this.show();
+    },
+    go(d) {
+      const n = this.i + d;
+      if (n < 0) return;
+      if (n >= this.steps.length) { this.end(); return; }
+      this.i = n;
+      this.show();
+    },
+    end() {
+      if (this.el) this.el.hidden = true;
+      store.set('tourEditor', true);
+    },
+    show() {
+      const s = this.steps[this.i];
+      const target = $(s.sel);
+      if (s.sel === '#ioPanel') target.open = true;
+      target.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const last = this.i === this.steps.length - 1;
+      $('.tour-tip', this.el).innerHTML = `
+        <div class="tour-count">${this.i + 1} / ${this.steps.length}</div>
+        <h4>${esc(s.t)}</h4>
+        <p class="ar" dir="rtl" lang="ar">${rich(s.ar)}</p>
+        <div class="tour-actions">
+          <button type="button" class="btn sm ghost" data-tour="end">Chiudi</button>
+          <span class="spacer"></span>
+          ${this.i ? `<button type="button" class="btn sm ghost" data-tour="prev">${icon('left', 'sm')}</button>` : ''}
+          <button type="button" class="btn sm primary" data-tour="next">${last ? 'Ho capito!' : 'Avanti'}${last ? '' : icon('right', 'sm')}</button>
+        </div>`;
+      requestAnimationFrame(() => this.place());
+    },
+    place() {
+      const s = this.steps[this.i];
+      const target = s && $(s.sel);
+      if (!target) return;
+      const r = target.getBoundingClientRect();
+      const pad = 6;
+      const spot = $('.tour-spot', this.el);
+      Object.assign(spot.style, { left: r.left - pad + 'px', top: r.top - pad + 'px', width: r.width + pad * 2 + 'px', height: Math.min(r.height, window.innerHeight * 0.6) + pad * 2 + 'px' });
+      const tip = $('.tour-tip', this.el);
+      const tw = Math.min(360, window.innerWidth - 24);
+      tip.style.width = tw + 'px';
+      const left = Math.max(12, Math.min(window.innerWidth - tw - 12, r.left + r.width / 2 - tw / 2));
+      tip.style.left = left + 'px';
+      const th = tip.offsetHeight;
+      const below = r.top + Math.min(r.height, window.innerHeight * 0.6) + pad + 12;
+      tip.style.top = (below + th < window.innerHeight - 8 ? below : Math.max(8, r.top - pad - th - 12)) + 'px';
+    },
+  };
+
+  // ───────────────────────── Console: ogni riga si può toccare ─────────────────────────
+  const EXC_HINT = {
+    NullPointerException: 'السبب: استخدمت مرجعاً قيمته `null` (لا يشير إلى أي كائن) ثم استدعيت عليه دالة أو قرأت منه حقلاً.',
+    ArrayIndexOutOfBoundsException: 'السبب: استخدمت مؤشراً خارج حدود المصفوفة. تذكّر: المؤشرات من `0` إلى `length - 1`.',
+    IndexOutOfBoundsException: 'السبب: طلبت عنصراً بمؤشر غير موجود في القائمة.',
+    StringIndexOutOfBoundsException: 'السبب: طلبت حرفاً بمؤشر خارج طول النص.',
+    ArithmeticException: 'السبب غالباً: قسمة عدد صحيح على صفر.',
+    NumberFormatException: 'السبب: حاولت تحويل نص ليس رقماً (مثل "ciao") إلى رقم.',
+    InputMismatchException: 'السبب: الـScanner كان ينتظر رقماً لكنه وجد نصاً (أو عدداً عشرياً بنقطة بدل الفاصلة).',
+    NoSuchElementException: 'السبب: البرنامج طلب إدخالاً أو عنصراً غير موجود.',
+    ClassCastException: 'السبب: حاولت تحويل كائن إلى نوع ليس هو نوعه الحقيقي.',
+    StackOverflowError: 'السبب: استدعاء ذاتي بلا حالة أساسية، فامتلأ الـStack.',
+    ConcurrentModificationException: 'السبب: عدّلت القائمة أثناء المرور عليها بـ for-each. استخدم `removeIf`.',
+  };
+
+  const runJava = (code, opts) => {
+    const r = JVM.run(code, opts);
+    r._src = code;
+    return r;
+  };
+
+  function consoleItems(res) {
+    if (res._con) return res._con;
+    const steps = res.trace || [];
+    const src = String(res._src || '').split('\n');
+    const lineOf = (i) => { const s = steps.find((x) => x.outLen > i); return s ? s.line : null; };
+    const codeAt = (ln) => (ln && src[ln - 1] ? src[ln - 1].trim() : '');
+    const items = res.stdout.map((c, i) => {
+      const ln = lineOf(i);
+      const code = codeAt(ln);
+      const where = ln ? ` في السطر ${ln}: \`${code}\`` : '';
+      if (c.input) {
+        return {
+          kind: 'console', src: c.text.replace(/\n$/, ''), t: 'Input (stdin) letto dal programma', meta: `Console · input${ln ? ' · riga ' + ln : ''}`,
+          ar: 'هذا هو الإدخال الذي قرأه البرنامج من لوحة المفاتيح.',
+          ex: `القيمة جاءت من خانة «Input (stdin)» وقرأها الـScanner${where}. في البرنامج الحقيقي يكتبها المستخدم بنفسه ثم يضغط Enter.`,
+          bn: 'Prima di chiedere un dato, stampa un messaggio che dica all\'utente cosa scrivere.', bnAr: 'قبل طلب أي إدخال اطبع رسالة توضح للمستخدم ماذا يكتب.',
+        };
+      }
+      if (c.err) {
+        const m = /(?:Exception in thread "main" )?([\w.$]+?(?:Exception|Error))/.exec(c.text);
+        const cls = m ? m[1].split('.').pop() : 'Eccezione';
+        return {
+          kind: 'console', src: c.text.replace(/\n$/, ''), t: `Eccezione: ${cls}`, meta: `Console · errore${ln ? ' · riga ' + ln : ''}`,
+          ar: 'البرنامج توقف بسبب خطأ أثناء التشغيل (استثناء لم يُلتقط).',
+          ex: `${EXC_HINT[cls] || 'اقرأ اسم الاستثناء ورسالته لتعرف السبب.'} السطر الأول فيه اسم الاستثناء ورسالته. الأسطر التي تبدأ بـ \`at\` هي الـStack trace: أول سطر منها يقول أين حدث الخطأ${ln ? ` (السطر ${ln})` : ''}، والأسطر التالية من استدعى ماذا.`,
+          bn: 'Leggi lo stack trace dall\'alto: la prima riga «at» indica dove è nato l\'errore.', bnAr: 'اقرأ الـStack trace من الأعلى: أول سطر at يدلك على مكان الخطأ.',
+        };
+      }
+      const how = /printf|String\.format/.test(code)
+        ? '`printf` تطبع نصاً منسقاً: `%d` عدد صحيح، `%.2f` عدد عشري برقمين بعد الفاصلة، `%s` نص، `%n` سطر جديد.'
+        : /println/.test(code) ? '`println` تطبع النص ثم تنتقل إلى سطر جديد.'
+          : /print\s*\(/.test(code) ? '`print` تطبع النص بدون الانتقال إلى سطر جديد، لذلك قد يأتي ما بعده على نفس السطر.' : '';
+      return {
+        kind: 'console', src: c.text.replace(/\n$/, ''), t: 'Output del programma', meta: `Console${ln ? ' · stampato dalla riga ' + ln : ''}`,
+        ar: 'هذا نص طبعه البرنامج على الشاشة.',
+        ex: `${ln ? `طبعته التعليمة${where}.` : ''} ${how}`.trim() || 'هذا ما أخرجه البرنامج.',
+        bn: 'Messaggi di output chiari aiutano chi usa il programma.', bnAr: 'رسائل المخرجات الواضحة تساعد من يستخدم البرنامج.',
+      };
+    });
+    const codiceUscita = res.exception ? 1 : 0;
+    items.push({
+      kind: 'console', src: `Processo terminato con codice di uscita ${codiceUscita}`, t: 'Codice di uscita (exit code)', meta: 'Console · fine del programma',
+      ar: codiceUscita ? 'البرنامج انتهى بسبب خطأ.' : 'البرنامج انتهى بنجاح ✓',
+      ex: 'رمز الخروج يقوله البرنامج لنظام التشغيل عند انتهائه: `0` يعني أن `main` انتهت بشكل طبيعي، و`1` يعني أن استثناءً لم يُلتقط أوقف البرنامج.',
+      bn: 'Un programma corretto termina sempre con codice 0.', bnAr: 'البرنامج الصحيح ينتهي دائماً بالرمز 0.',
+    });
+    res._con = items;
+    res._conGid = registerGroup(items);
+    return items;
+  }
+
   // ───────────────────────── Avvio ─────────────────────────
   function initSplash() {
     const sp = $('#splash');
@@ -2062,6 +2448,11 @@
     initSheet();
     window.addEventListener('hashchange', route);
     route();
+    $('#helpBtn').addEventListener('click', () => {
+      if (location.hash.startsWith('#/editor')) tour.start(EDITOR_TOUR);
+      else tutorial.open();
+    });
+    if (!store.get('tutorial', false)) tutorial.open();
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
       navigator.serviceWorker.register('sw.js').catch(() => { /* offline non disponibile */ });
     }
