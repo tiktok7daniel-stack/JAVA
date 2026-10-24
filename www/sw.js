@@ -1,5 +1,5 @@
 /* CodeForge — Service worker: app shell offline (cache-first) e font in cache a runtime. */
-const VERSION = 'codeforge-v2';
+const VERSION = 'codeforge-v3';
 const SHELL = [
   './',
   './index.html',
@@ -14,7 +14,16 @@ const SHELL = [
   './js/linter.js',
   './js/explainer.js',
   './js/verifica.js',
-  './js/data/curriculum.js',
+  './js/data/livelli/livello-0.js',
+  './js/data/livelli/livello-1.js',
+  './js/data/livelli/livello-2.js',
+  './js/data/livelli/livello-3.js',
+  './js/data/livelli/livello-4.js',
+  './js/data/livelli/livello-5.js',
+  './js/data/livelli/livello-6.js',
+  './js/data/livelli/livello-7.js',
+  './js/data/livelli/livello-8.js',
+  './js/data/percorso.js',
   './js/data/glossary.js',
   './js/data/esame.js',
   './manifest.webmanifest',

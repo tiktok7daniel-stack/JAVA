@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const C = window.CF_CURRICULUM;
+  const P = window.CF_PERCORSO;
   const GLOSS = window.CF_GLOSSARIO;
   const EXAM = window.CF_ESAME;
   const JVM = window.CFInterpreter;
@@ -61,6 +61,8 @@
     done: store.get('done', {}),
     passed: store.get('passed', {}),
     saved: store.get('saved', []),
+    prog: store.get('prog', {}),
+    libero: store.get('libero', false),
     streak: 1,
   };
 
@@ -81,6 +83,7 @@
     $('#xpVal').textContent = state.xp;
     $('#streakVal').textContent = state.streak;
     $('#savedVal').textContent = state.saved.length;
+    updateRank();
     if (bump) {
       const el = $('.chip-' + bump);
       if (el) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
@@ -103,9 +106,8 @@
     toastTimer = setTimeout(() => { t.className = 'toast ' + (kind || ''); }, 2600);
   }
 
-  const allLessons = [];
-  for (const m of C.moduli) for (const l of m.lezioni) allLessons.push({ m, l });
-  const findLesson = (id) => allLessons.find((x) => x.l.id === id);
+  const allLessons = P.lezioni;
+  const findLesson = (id) => allLessons.find((l) => l.id === id);
 
   // ───────────────────────── Sintesi vocale ─────────────────────────
   // Nell'APK Android il WebView non ha speechSynthesis: si usa il ponte nativo CodeForgeNative.
@@ -601,8 +603,7 @@
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
     if (view === 'lezioni') {
-      if (parts[2]) renderLesson(parts[1], parts[2]);
-      else if (parts[1]) renderModule(parts[1]);
+      if (parts[1]) renderLesson(parts[1], +parts[2] || null);
       else renderHome();
       window.scrollTo(0, 0);
     } else if (view === 'editor') {
@@ -620,7 +621,7 @@
     v.style.animation = '';
   }
 
-  // ───────────────────────── Lezioni ─────────────────────────
+  // ───────────────────────── Percorso Accademico ─────────────────────────
   function ringSvg(pct, color, label, sub, extraCls) {
     const off = RING_C * (1 - Math.max(0, Math.min(1, pct)));
     return `<div class="ring-wrap ${extraCls || ''}">
@@ -629,170 +630,159 @@
       <div class="ring-label"><div><b>${label}</b><small>${sub}</small></div></div></div>`;
   }
 
-  function moduleProgress(m) {
-    const done = m.lezioni.filter((l) => state.done[l.id]).length;
-    return { done, tot: m.lezioni.length };
+  const FASI = [
+    { n: 1, t: 'Teoria', ar: 'النظرية', ic: 'book' },
+    { n: 2, t: 'Micro-Quiz', ar: 'اختبار سريع', ic: 'target' },
+    { n: 3, t: 'Costruisci', ar: 'ابنِ الكود', ic: 'wand' },
+    { n: 4, t: 'Laboratorio', ar: 'المختبر', ic: 'code' },
+    { n: 5, t: 'Riepilogo', ar: 'الخلاصة', ic: 'trophy' },
+  ];
+  const VOTO_MINIMO = 18;
+  const GIUDIZIO_AR = { '30 e Lode': 'ممتاز مع مرتبة الشرف', Ottimo: 'ممتاز', Buono: 'جيد', Sufficiente: 'مقبول', Respinto: 'غير ناجح' };
+  const giudizio = (v, lode) => (lode ? '30 e Lode' : v >= 28 ? 'Ottimo' : v >= 24 ? 'Buono' : v >= VOTO_MINIMO ? 'Sufficiente' : 'Respinto');
+
+  const prog = (id) => state.prog[id] || (state.prog[id] = { fase: 1, quiz: {}, orale: {} });
+  const saveProg = () => store.set('prog', state.prog);
+  const isDone = (l) => !!(state.prog[l.id] && state.prog[l.id].superata);
+  function isUnlocked(l) {
+    if (state.libero) return true;
+    const i = allLessons.findIndex((x) => x.id === l.id);
+    return i <= 0 || isDone(allLessons[i - 1]) || isDone(l);
+  }
+  const livelloDone = (liv) => liv.lezioni.every((x) => isDone(x));
+
+  /** Grado accademico attuale: quello del livello in corso (Matricola all'inizio). */
+  function rankAttuale() {
+    const liv = P.livelli.find((x) => !livelloDone(x));
+    return liv ? { grado: liv.grado, gradoAr: liv.gradoAr, colore: liv.colore, numero: liv.numero } : { ...P.livelli[P.livelli.length - 1], finale: true };
+  }
+
+  /** Voto della lezione in trentesimi: quiz 10 + costruisci 10 + laboratorio 10. */
+  function votoLezione(l) {
+    const p = prog(l.id);
+    const nq = l.quiz.length;
+    const okQ = l.quiz.filter((q, i) => p.quiz[i] === q.corretta).length;
+    const quiz = nq ? (10 * okQ) / nq : 0;
+    const cost = !p.costOk ? 0 : p.costSol ? 3 : Math.max(4, 10 - 2 * (p.costErr || 0));
+    const lab = p.lab ? (p.labSol ? 6 : 10) : 0;
+    const voto = Math.round(quiz + cost + lab);
+    const lode = voto >= 30 && okQ === nq && !p.costErr && !p.costSol && !p.labSol;
+    const res = { voto: Math.min(30, voto), lode, parti: { quiz, cost, lab }, okQ, nq };
+    if (l.esame) {
+      // Simulazione d'esame: scritto (quiz), pratica (costruisci + laboratorio), orale (autovalutazione)
+      const no = (l.orale || []).length;
+      const okO = Object.values(p.orale || {}).filter(Boolean).length;
+      const scritto = (30 * okQ) / Math.max(1, nq);
+      const pratica = (30 * (cost + lab)) / 20;
+      const orale = (30 * okO) / Math.max(1, no);
+      const w = l.esame.pesi;
+      const fin = Math.round(scritto * w.scritto + pratica * w.pratica + orale * w.orale);
+      const insuff = Math.min(scritto, pratica, orale) < VOTO_MINIMO;
+      res.esame = { scritto, pratica, orale, completo: Object.keys(p.orale || {}).length === no };
+      res.voto = insuff ? Math.min(fin, VOTO_MINIMO - 1) : Math.min(30, fin);
+      res.lode = res.voto >= 30 && scritto === 30 && pratica === 30 && orale === 30;
+    }
+    res.giudizio = giudizio(res.voto, res.lode);
+    return res;
+  }
+
+  function updateRank() {
+    const r = rankAttuale();
+    const el = $('#rankVal');
+    if (el) el.textContent = r.grado;
+    const chip = $('.chip-rank');
+    if (chip) chip.style.setProperty('--rc', r.colore);
   }
 
   function renderHome() {
     const tot = allLessons.length;
-    const done = allLessons.filter((x) => state.done[x.l.id]).length;
-    const next = allLessons.find((x) => !state.done[x.l.id]) || allLessons[0];
+    const done = allLessons.filter(isDone).length;
+    const next = allLessons.find((x) => !isDone(x) && isUnlocked(x)) || allLessons[0];
+    const r = rankAttuale();
     $('#view-lezioni').innerHTML = `
       <div class="stack-lg">
         <section class="hero card">
           <div>
-            <div class="eyebrow">Corso di Laurea in Informatica · Programmazione I</div>
-            <h1 class="h1">Impara Java, capisci ogni riga.</h1>
-            <p class="lead">Lezioni universitarie in italiano: tocca qualsiasi frase o riga di codice per la spiegazione istantanea in arabo, esegui il codice nel simulatore JVM e ricevi il feedback «Buona Norma» del professore.</p>
-            ${arP('تعلّم البرمجة بلغة Java باللغة الإيطالية كما في الجامعات الإيطالية: اضغط على أي جملة أو سطر كود لتحصل فوراً على الترجمة والشرح بالعربية.')}
+            <div class="eyebrow">Percorso Accademico Strutturato · Programmazione I</div>
+            <h1 class="h1">Da Matricola a 30 e Lode.</h1>
+            <p class="lead">${P.livelli.length} livelli, ${tot} lezioni guidate in 5 fasi: teoria con analogie, micro-quiz, costruzione del codice, laboratorio con verifica automatica e voto in trentesimi.</p>
+            ${arP('مسار جامعي متدرّج من 9 مستويات: كل درس يمرّ بخمس مراحل (نظرية مع تشبيه، اختبار سريع، بناء الكود، مختبر بتصحيح آلي، ثم خلاصة ودرجة من 30). أكمل الدرس بنجاح لفتح الدرس التالي.')}
+            <div class="rank-card" style="--rc:${r.colore}">${icon('cap')}<div><small>Grado attuale</small><b>${esc(r.grado)}</b><span class="ar" dir="rtl" lang="ar">${esc(r.gradoAr)}</span></div></div>
             <div class="row hero-actions">
-              <a class="btn primary" href="#/lezioni/${next.m.id}/${next.l.id}">${icon('play')}${done ? 'Continua' : 'Inizia'}: ${esc(next.l.titolo)}</a>
-              <a class="btn" href="#/editor">${icon('code')}Apri l'Editor Java</a>
+              <a class="btn primary" href="#/lezioni/${next.id}">${icon('play')}${done ? 'Continua' : 'Inizia'}: ${esc(next.titolo)}</a>
+              <label class="switch" title="Sblocca tutte le lezioni"><input type="checkbox" id="freeMode" ${state.libero ? 'checked' : ''}><span class="track"><i></i></span>Modalità libera</label>
             </div>
           </div>
           ${ringSvg(done / tot, '#58A6FF', `${Math.round((done / tot) * 100)}%`, `${done}/${tot} lezioni`)}
         </section>
-        <section>
-          <div class="section-title">Il programma didattico</div>
-          <div class="modules">
-            ${C.moduli.map((m) => {
-              const p = moduleProgress(m);
-              return `<a class="module-card" href="#/lezioni/${m.id}" style="--mc:${m.colore}">
-                <div class="module-top"><span class="module-icon">${icon(m.icona, 'lg')}</span><div><div class="module-num">MODULO ${m.numero}</div><div class="h3">${esc(m.titolo)}</div></div></div>
-                ${arP(m.titoloAr)}
-                <p>${esc(m.descr)}</p>
-                <div class="progress"><span style="width:${(p.done / p.tot) * 100}%"></span></div>
-                <div class="module-foot"><span>${p.tot} lezioni</span><span>${p.done === p.tot ? '✓ Completato' : `${p.done}/${p.tot} completate`}</span></div>
-              </a>`;
-            }).join('')}
-          </div>
-        </section>
-      </div>`;
-  }
-
-  function renderModule(mid) {
-    const m = C.moduli.find((x) => x.id === mid);
-    if (!m) { location.hash = '#/lezioni'; return; }
-    const p = moduleProgress(m);
-    $('#view-lezioni').innerHTML = `
-      <div class="stack">
-        <nav class="crumbs"><a href="#/lezioni">Lezioni</a>${icon('right')}<span>Modulo ${m.numero}</span></nav>
-        <section class="card hero" style="--mc:${m.colore}">
-          <div>
-            <div class="row"><span class="module-icon" style="--mc:${m.colore};color:${m.colore};background:color-mix(in srgb, ${m.colore} 14%, transparent);border:1px solid color-mix(in srgb, ${m.colore} 32%, transparent)">${icon(m.icona, 'lg')}</span><div class="eyebrow">Modulo ${m.numero}</div></div>
-            <h1 class="h1">${esc(m.titolo)}</h1>
-            ${arP(m.titoloAr)}
-            <p class="lead">${esc(m.descr)}</p>
-          </div>
-          ${ringSvg(p.done / p.tot, m.colore, `${p.done}/${p.tot}`, 'lezioni')}
-        </section>
-        <div class="lesson-list">
-          ${m.lezioni.map((l, i) => `
-            <a class="lesson-item ${state.done[l.id] ? 'done' : ''}" href="#/lezioni/${m.id}/${l.id}">
-              <span class="lesson-idx">${state.done[l.id] ? icon('check', 'sm') : `${m.numero}.${i + 1}`}</span>
-              <div style="flex:1;min-width:0"><div class="h3">${esc(l.titolo)}</div>
-              <div class="meta"><span>${icon('clock', 'sm')} ${esc(l.durata)}</span>${state.passed[l.id] ? '<span class="pill ok">Esercizio superato</span>' : ''}</div></div>
-              ${icon('right')}
-            </a>`).join('')}
+        <div class="tree">
+          ${P.livelli.map((liv) => {
+            const nd = liv.lezioni.filter(isDone).length;
+            const open = isUnlocked(liv.lezioni[0]);
+            const full = nd === liv.lezioni.length;
+            return `<section class="level ${open ? '' : 'locked'} ${full ? 'complete' : ''}" id="liv-${liv.numero}" style="--mc:${liv.colore}">
+              <div class="level-head">
+                <span class="level-badge">${icon(open ? liv.icona : 'lock', 'lg')}<b>${liv.numero}</b></span>
+                <div class="level-info">
+                  <div class="module-num">LIVELLO ${liv.numero} · ${esc(liv.grado)}</div>
+                  <div class="h3">${esc(liv.titolo)}</div>
+                  ${arP(liv.titoloAr + ' · ' + liv.gradoAr)}
+                  <div class="progress"><span style="width:${(nd / liv.lezioni.length) * 100}%"></span></div>
+                </div>
+                <span class="level-count">${full ? icon('trophy') : `${nd}/${liv.lezioni.length}`}</span>
+              </div>
+              <div class="path">
+                ${liv.lezioni.map((x) => findLesson(x.id)).map((l, i) => {
+                  const p = state.prog[l.id];
+                  const done = isDone(l), un = isUnlocked(l);
+                  const cur = un && !done;
+                  const v = done ? votoLezione(l) : null;
+                  return `<a class="node ${done ? 'done' : cur ? 'current' : 'locked'} ${i % 2 ? 'odd' : ''}" href="#/lezioni/${l.id}" data-lock="${un ? '' : '1'}">
+                    <span class="node-dot">${done ? (v.lode ? '30L' : v.voto) : un ? l.indice : icon('lock', 'sm')}</span>
+                    <span class="node-text"><b>Lezione ${l.indice}</b>${esc(l.titolo)}
+                      <small>${icon('clock', 'sm')} ${esc(l.durata)}${p && !done && p.fase > 1 ? ` · Fase ${p.fase}/5` : ''}${l.esame ? ' · Simulazione d\'esame' : ''}</small></span>
+                  </a>`;
+                }).join('')}
+              </div>
+            </section>`;
+          }).join('')}
         </div>
       </div>`;
+    $('#freeMode').addEventListener('change', (e) => {
+      state.libero = e.target.checked;
+      store.set('libero', state.libero);
+      toast(state.libero ? 'Modalità libera: tutte le lezioni sono sbloccate' : 'Percorso guidato: le lezioni si sbloccano in ordine');
+      renderHome();
+    });
+    $$('.node[data-lock="1"]').forEach((a) => a.addEventListener('click', (e) => {
+      e.preventDefault();
+      toast('🔒 Supera la lezione precedente (voto ≥ 18) per sbloccarla');
+    }));
   }
 
   const lessonPlayers = [];
+  const lessonBlocks = [];
 
-  function renderLesson(mid, lid) {
-    const found = findLesson(lid);
-    if (!found) { location.hash = '#/lezioni'; return; }
-    const { m, l } = found;
-    lessonPlayers.forEach((p) => p.stop());
-    lessonPlayers.length = 0;
-    const idx = allLessons.indexOf(found);
-    const prev = allLessons[idx - 1], next = allLessons[idx + 1];
-    const normaSec = l.sezioni.find((s) => s.tipo === 'norma');
-    const codeBlocks = [];
-    let li = 0;
-    const secHtml = l.sezioni.map((s) => {
-      if (s.tipo === 'testo') {
-        const items = s.frasi.map((f, i) => ({
-          kind: 'frase', src: f.it, t: f.t, ar: f.ar, ex: f.ex,
-          bn: f.bn || (normaSec && normaSec.it), bnAr: f.bnAr || (normaSec && normaSec.ar),
-          meta: `Frase ${i + 1} · ${l.titolo}`,
-        }));
-        const gid = registerGroup(items);
-        return `<section class="card prose">
-          ${s.titolo ? `<div class="section-title">${esc(s.titolo)}</div>` : ''}
-          ${items.map((it, i) => `<button type="button" class="tappable${isSaved(it) ? ' saved' : ''}" data-grp="${gid}" data-i="${i}"><span class="it-text">${rich(it.src)}</span><span class="term-hint">${esc(it.t)}</span><span class="tap-badge">${icon('lang')}</span></button>`).join('')}
-        </section>`;
-      }
-      if (s.tipo === 'codice') {
-        const items = codeItems(s.codice, s.note, s.titolo);
-        const cl = codeLinesHtml(s.codice, items);
-        const k = li++;
-        codeBlocks.push({ k, s });
-        return `<section class="code-block" data-cb="${k}">
-          <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="file-name">${icon('code', 'sm')}${esc(s.titolo)}</span><span class="spacer"></span>
-            ${s.esegui ? `<button type="button" class="btn sm purple" data-run="${k}">${icon('bug', 'sm')}Esegui passo-passo</button>` : ''}
-            <button type="button" class="btn sm" data-open="${k}">${icon('open', 'sm')}Apri nell'Editor</button></div>
-          <div class="code-lines">${cl.html}</div>
-          <div class="debugger" data-dbg="${k}" hidden></div>
-        </section>`;
-      }
-      if (s.tipo === 'norma') {
-        return `<section class="norma"><span class="norma-ic">${icon('shield')}</span><div><h4>Regola di Buona Norma</h4><p class="it-text">${rich(s.it)}</p>${arP(s.ar)}</div></section>`;
-      }
-      if (s.tipo === 'schema') {
-        return `<section class="card schema"><div class="schema-cap"><div class="section-title">Schema: Stack e Heap</div>
-          <p class="it-text">Dopo <code dir="ltr">Punto p2 = p1;</code> due riferimenti sullo Stack puntano allo stesso oggetto nello Heap.</p>
-          ${arP('بعد `Punto p2 = p1;` يوجد مرجعان في الـStack يشيران إلى نفس الكائن في الـHeap: أي تعديل عبر أحدهما يظهر عبر الآخر.')}</div>
-          <div class="schema-mem"></div></section>`;
-      }
-      return '';
-    }).join('');
-    const ex = l.esercizio;
-    const passed = !!state.passed[l.id];
-    $('#view-lezioni').innerHTML = `
-      <article class="lesson stack-lg">
-        <div class="stack-sm">
-          <nav class="crumbs"><a href="#/lezioni">Lezioni</a>${icon('right')}<a href="#/lezioni/${m.id}">Modulo ${m.numero}</a>${icon('right')}<span>Lezione ${m.lezioni.indexOf(l) + 1}</span></nav>
-          <div class="eyebrow" style="color:${m.colore}">Modulo ${m.numero} · ${esc(m.titolo)}</div>
-          <h1 class="h1">${esc(l.titolo)}</h1>
-          <div class="row"><span class="pill neutral">${icon('clock', 'sm')} ${esc(l.durata)}</span>${state.done[l.id] ? '<span class="pill ok">✓ Completata</span>' : ''}
-            <span class="hint-chip">${icon('lang', 'sm')} Tocca ogni frase o riga di codice <span class="ar" dir="rtl" lang="ar">· اضغط للشرح بالعربية</span></span></div>
-        </div>
-        ${secHtml}
-        ${ex ? `<section class="exercise-card">
-          <div class="row"><span class="pill ok">${icon('target', 'sm')} Esercizio</span>${passed ? '<span class="pill ok">✓ Superato</span>' : ''}</div>
-          <h2 class="h2" style="margin-top:10px">${esc(ex.titolo)}</h2>
-          <p class="it-text" style="margin:0">${rich(ex.consegna)}</p>
-          ${arP(ex.consegnaAr)}
-          <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="btnDoEx">${icon('code')}Svolgi nell'Editor</button></div>
-        </section>` : ''}
-        <div class="lesson-nav">
-          ${prev ? `<a class="btn ghost" href="#/lezioni/${prev.m.id}/${prev.l.id}">${icon('left')}${esc(prev.l.titolo)}</a>` : '<span></span>'}
-          <button type="button" class="btn ${state.done[l.id] ? 'success' : 'gold'}" id="btnDone">${icon('check')}${state.done[l.id] ? 'Lezione completata' : 'Segna come completata'}</button>
-          ${next ? `<a class="btn ghost" href="#/lezioni/${next.m.id}/${next.l.id}">${esc(next.l.titolo)}${icon('right')}</a>` : '<span></span>'}
-        </div>
-      </article>`;
+  function codeBlockHtml(codice, file, notes, opts) {
+    const o = opts || {};
+    const k = lessonBlocks.length;
+    lessonBlocks.push({ codice, file, input: o.input, files: o.files });
+    const cl = codeLinesHtml(codice, codeItems(codice, notes, file));
+    return `<section class="code-block" data-cb="${k}">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="file-name">${icon('code', 'sm')}${esc(file)}</span><span class="spacer"></span>
+        <button type="button" class="btn sm purple" data-run="${k}">${icon('bug', 'sm')}Esegui passo-passo</button>
+        <button type="button" class="btn sm" data-open="${k}">${icon('open', 'sm')}Apri nell'Editor</button></div>
+      ${o.input ? `<div class="io-note">${icon('terminal', 'sm')} Input (stdin): <code dir="ltr">${esc(o.input.replace(/\n/g, '⏎ '))}</code></div>` : ''}
+      ${o.files ? `<div class="io-note">${icon('box', 'sm')} File: ${Object.keys(o.files).map((f) => `<code dir="ltr">${esc(f)}</code>`).join(' ')}</div>` : ''}
+      <div class="code-lines">${cl.html}</div>
+      <div class="debugger" data-dbg="${k}" hidden></div>
+    </section>`;
+  }
 
-    const schema = $('.schema-mem');
-    if (schema) {
-      renderMemory(schema, {
-        frames: [{ name: 'Memoria.main()', line: 25, vars: [
-          { name: 'args', type: 'String[]', val: '@4e70', ref: '@4e70' },
-          { name: 'a', type: 'int', val: '5' }, { name: 'b', type: 'int', val: '6' },
-          { name: 'p1', type: 'Punto', val: '@5241', ref: '@5241' }, { name: 'p2', type: 'Punto', val: '@5241', ref: '@5241' }] }],
-        statics: [],
-        heap: [
-          { addr: '@4e70', label: 'String[0]', kind: 'array', fields: [] },
-          { addr: '@5241', label: 'Punto', kind: 'obj', fields: [{ name: 'x', access: 'private', val: '11' }, { name: 'y', access: 'private', val: '2' }] }],
-        memAr: 'المتغيرات البدائية `a` و `b` تحتوي على قيمها مباشرة في الـStack، بينما `p1` و `p2` يحتويان على نفس العنوان `@5241`، أي يشيران إلى كائن `Punto` واحد في الـHeap.',
-      });
-    }
-
-    $$('[data-run]').forEach((b) => b.addEventListener('click', () => {
+  function wireCodeBlocks(root) {
+    $$('[data-run]', root).forEach((b) => b.addEventListener('click', () => {
       const k = +b.dataset.run;
-      const block = $(`[data-cb="${k}"]`);
+      const block = $(`[data-cb="${k}"]`, root);
       const host = $(`[data-dbg="${k}"]`, block);
       if (!host.hidden) {
         host.hidden = true;
@@ -818,32 +808,392 @@
         },
       });
       lessonPlayers.push(pl);
-      pl.load(JVM.run(codeBlocks[k].s.codice), false);
+      const cb = lessonBlocks[k];
+      pl.load(JVM.run(cb.codice, { input: cb.input, files: cb.files }), false);
       addXp(2);
     }));
-    $$('[data-open]').forEach((b) => b.addEventListener('click', () => {
-      const cb = codeBlocks[+b.dataset.open];
-      editor.load(cb.s.codice, cb.s.titolo, null);
+    $$('[data-open]', root).forEach((b) => b.addEventListener('click', () => {
+      const cb = lessonBlocks[+b.dataset.open];
+      editor.load(cb.codice, cb.file, null, { input: cb.input, files: cb.files });
       location.hash = '#/editor';
     }));
-    const bd = $('#btnDone');
-    bd.addEventListener('click', () => {
-      if (!state.done[l.id]) {
-        state.done[l.id] = true;
-        store.set('done', state.done);
-        addXp(20, 'lezione completata');
-        renderLesson(mid, lid);
-      }
+  }
+
+  function renderLesson(lid, faseReq) {
+    const l = findLesson(lid);
+    if (!l) { location.hash = '#/lezioni'; return; }
+    if (!isUnlocked(l)) { toast('🔒 Lezione bloccata: supera prima quella precedente'); location.hash = '#/lezioni'; return; }
+    lessonPlayers.forEach((p) => p.stop());
+    lessonPlayers.length = 0;
+    lessonBlocks.length = 0;
+    const p = prog(l.id);
+    const fase = Math.max(1, Math.min(faseReq || p.fase || 1, p.fase || 1));
+    const liv = l.livello;
+    const idx = allLessons.indexOf(l);
+    const next = allLessons[idx + 1];
+    let body = '';
+    if (fase === 1) body = fase1Html(l);
+    else if (fase === 2) body = fase2Html(l);
+    else if (fase === 3) body = fase3Html(l);
+    else if (fase === 4) body = fase4Html(l);
+    else body = fase5Html(l, next);
+    $('#view-lezioni').innerHTML = `
+      <article class="lesson stack-lg" style="--mc:${liv.colore}">
+        <div class="stack-sm">
+          <nav class="crumbs"><a href="#/lezioni">Percorso</a>${icon('right')}<a href="#/lezioni" data-liv="${liv.numero}">Livello ${liv.numero}</a>${icon('right')}<span>Lezione ${l.indice}</span></nav>
+          <div class="eyebrow" style="color:${liv.colore}">Livello ${liv.numero} · ${esc(liv.titolo)}</div>
+          <h1 class="h1">${esc(l.titolo)}</h1>
+          <div class="row"><span class="pill neutral">${icon('clock', 'sm')} ${esc(l.durata)}</span>${isDone(l) ? `<span class="pill ok">✓ Superata · ${votoLezione(l).lode ? '30 e Lode' : votoLezione(l).voto + '/30'}</span>` : ''}
+            <span class="hint-chip">${icon('lang', 'sm')} Tocca ogni frase o riga <span class="ar" dir="rtl" lang="ar">· اضغط للشرح بالعربية</span></span></div>
+        </div>
+        <div class="phases">
+          <div class="phase-top"><b>Fase ${fase}/5</b> · ${FASI[fase - 1].t} <span class="ar" dir="rtl" lang="ar">${FASI[fase - 1].ar}</span></div>
+          <div class="phase-bar"><span style="width:${(fase / 5) * 100}%"></span></div>
+          <ol class="stepper">${FASI.map((f) => {
+            const reach = f.n <= p.fase;
+            return `<li><button type="button" class="step ${f.n === fase ? 'on' : ''} ${f.n < p.fase || (f.n === 5 && isDone(l)) ? 'ok' : ''}" data-fase="${f.n}" ${reach ? '' : 'disabled'} aria-label="Fase ${f.n}: ${f.t}">${icon(f.n < p.fase ? 'check' : reach ? f.ic : 'lock', 'sm')}<span>${f.t}</span></button></li>`;
+          }).join('')}</ol>
+        </div>
+        <div class="phase-body" id="phaseBody">${body}</div>
+        <div class="lesson-nav">
+          ${fase > 1 ? `<a class="btn ghost" href="#/lezioni/${l.id}/${fase - 1}">${icon('left')}Fase ${fase - 1}</a>` : '<a class="btn ghost" href="#/lezioni">' + icon('left') + 'Percorso</a>'}
+          ${fase < 5 ? `<button type="button" class="btn primary" id="btnAvanti" ${puoAvanzare(l, fase) ? '' : 'disabled'}>Avanti: ${FASI[fase].t}${icon('right')}</button>` : '<span></span>'}
+        </div>
+      </article>`;
+    const root = $('#view-lezioni');
+    $$('.step[data-fase]', root).forEach((b) => b.addEventListener('click', () => { location.hash = `#/lezioni/${l.id}/${b.dataset.fase}`; }));
+    const crumbLiv = $('[data-liv]', root);
+    crumbLiv.addEventListener('click', (e) => {
+      e.preventDefault();
+      location.hash = '#/lezioni';
+      setTimeout(() => { const s = $('#liv-' + crumbLiv.dataset.liv); if (s) s.scrollIntoView({ block: 'start' }); }, 60);
     });
-    const be = $('#btnDoEx');
-    if (be) be.addEventListener('click', () => {
-      editor.startExercise(l);
-      location.hash = '#/editor';
+    const av = $('#btnAvanti');
+    if (av) av.addEventListener('click', () => {
+      if (!puoAvanzare(l, fase)) return;
+      if (p.fase < fase + 1) { p.fase = fase + 1; saveProg(); addXp(5, `Fase ${fase} completata`); }
+      location.hash = `#/lezioni/${l.id}/${fase + 1}`;
+    });
+    wireCodeBlocks(root);
+    const say = $('[data-say-ar]', root);
+    if (say) say.addEventListener('click', (e) => tts.speak([l.analogia.ar], 'ar-SA', e.currentTarget));
+    if (fase === 2) wireQuiz(l);
+    else if (fase === 3) wireCostruisci(l);
+    else if (fase === 4) wireLab(l);
+    else if (fase === 5) wireRiepilogo(l, next);
+  }
+
+  function puoAvanzare(l, fase) {
+    const p = prog(l.id);
+    if (fase === 2) return l.quiz.every((q, i) => p.quiz[i] !== undefined);
+    if (fase === 3) return !!p.costOk;
+    if (fase === 4) return !!(p.lab || p.labSkip);
+    return true;
+  }
+  function refreshAvanti(l, fase) {
+    const b = $('#btnAvanti');
+    if (b) b.disabled = !puoAvanzare(l, fase);
+  }
+
+  // Fase 1 — Teoria guidata, analogia, esempio con debugger e regola di Buona Norma
+  function fase1Html(l) {
+    const items = l.teoria.map((f, i) => ({ kind: 'frase', src: f.it, t: f.t, ar: f.ar, ex: f.ex, bn: f.bn || l.norma.it, bnAr: f.bnAr || l.norma.ar, meta: `Frase ${i + 1} · ${l.titolo}` }));
+    const gid = registerGroup(items);
+    const e = l.esempio;
+    return `
+      <section class="card prose">
+        <div class="section-title">Teoria guidata</div>
+        <ul class="obiettivi">${l.obiettivi.map((o) => `<li>${icon('target', 'sm')}${esc(o)}</li>`).join('')}</ul>
+        ${items.map((it, i) => `<button type="button" class="tappable${isSaved(it) ? ' saved' : ''}" data-grp="${gid}" data-i="${i}"><span class="it-text">${rich(it.src)}</span><span class="term-hint">${esc(it.t)}</span><span class="tap-badge">${icon('lang')}</span></button>`).join('')}
+      </section>
+      <section class="analogy">
+        <div class="analogy-ic">${icon('sparkle')}</div>
+        <div>
+          <h4>Perché serve davvero? <span class="ar" dir="rtl" lang="ar">(المفهوم ببساطة)</span></h4>
+          <div class="h3">${esc(l.analogia.titolo)}</div>
+          <p class="it-text">${rich(l.analogia.it)}</p>
+          ${arP(l.analogia.ar)}
+          <button type="button" class="btn sm ghost" data-say-ar>${icon('volume', 'sm')}استمع بالعربية</button>
+        </div>
+      </section>
+      ${codeBlockHtml(e.codice, e.file, e.note, { input: e.input, files: e.files })}
+      <section class="norma"><span class="norma-ic">${icon('shield')}</span><div><h4>Regola di Buona Norma</h4><p class="it-text">${rich(l.norma.it)}</p>${arP(l.norma.ar)}</div></section>`;
+  }
+
+  // Fase 2 — Micro-quiz con spiegazione bilingue
+  function fase2Html(l) {
+    const p = prog(l.id);
+    return `<div class="stack">${l.quiz.map((q, i) => {
+      const ans = p.quiz[i];
+      const done = ans !== undefined;
+      return `<section class="card quiz-q" data-q="${i}">
+        <div class="row"><span class="pill neutral">Domanda ${i + 1} / ${l.quiz.length}</span>${done ? `<span class="pill ${ans === q.corretta ? 'ok' : 'errore'}">${ans === q.corretta ? '✓ Corretta' : '✗ Errata'}</span>` : ''}</div>
+        <h3 class="h3 q-text">${rich(q.d)}</h3>
+        ${arP(q.dAr)}
+        <div class="options">${q.opzioni.map((o, k) => `<button type="button" class="option ${done && k === q.corretta ? 'right' : ''} ${done && k === ans && ans !== q.corretta ? 'wrong' : ''}" data-opt="${k}" ${done ? 'disabled' : ''}><span class="opt-k">${'ABCD'[k]}</span><code dir="ltr" class="opt-code">${esc(o)}</code></button>`).join('')}</div>
+        <div class="q-exp" ${done ? '' : 'hidden'}><p class="it-text">${rich(q.it)}</p>${arP(q.ar)}</div>
+      </section>`;
+    }).join('')}</div>`;
+  }
+
+  function wireQuiz(l) {
+    const p = prog(l.id);
+    $$('.quiz-q').forEach((card) => {
+      const i = +card.dataset.q;
+      const q = l.quiz[i];
+      $$('[data-opt]', card).forEach((b) => b.addEventListener('click', () => {
+        if (p.quiz[i] !== undefined) return;
+        const k = +b.dataset.opt;
+        p.quiz[i] = k;
+        saveProg();
+        const ok = k === q.corretta;
+        $$('[data-opt]', card).forEach((x) => { x.disabled = true; });
+        b.classList.add(ok ? 'right' : 'wrong');
+        $(`[data-opt="${q.corretta}"]`, card).classList.add('right');
+        $('.q-exp', card).hidden = false;
+        $('.row', card).insertAdjacentHTML('beforeend', `<span class="pill ${ok ? 'ok' : 'errore'}">${ok ? '✓ Corretta' : '✗ Errata'}</span>`);
+        if (ok) addXp(5, 'risposta corretta');
+        else toast('Risposta errata: leggi la spiegazione');
+        refreshAvanti(l, 2);
+      }));
     });
   }
 
+  // Fase 3 — Costruisci il codice (spazi da completare)
+  const normBlank = (s) => String(s).replace(/\s+/g, '');
+  function fase3Html(l) {
+    const c = l.costruisci;
+    const p = prog(l.id);
+    const parti = P.analizzaCostruisci(c.codice);
+    let bi = 0;
+    const html = parti.map((x) => {
+      if (!x.risposte) return esc(x.testo);
+      const i = bi++;
+      const val = p.costOk ? x.risposte[0] : (p.costDraft && p.costDraft[i]) || '';
+      const w = Math.max(3, ...x.risposte.map((r) => r.length)) + 1;
+      return `<input class="blank ${p.costOk ? 'ok' : ''}" data-b="${i}" value="${esc(val)}" style="width:${w}ch" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Spazio ${i + 1}" ${p.costOk ? 'readonly' : ''}>`;
+    }).join('');
+    return `
+      <section class="card">
+        <div class="section-title">${icon('wand', 'sm')} Costruisci il Codice</div>
+        <p class="it-text">${rich(c.consegna)}</p>
+        ${arP(c.consegnaAr)}
+        <p class="muted small">Completa gli spazi evidenziati, poi premi «Verifica».</p>
+        ${arP('املأ الفراغات المظللة ثم اضغط «Verifica».', 'small')}
+      </section>
+      <section class="code-block builder-block">
+        <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="file-name">${icon('code', 'sm')}Costruisci.java</span></div>
+        <pre class="builder" dir="ltr">${html}</pre>
+      </section>
+      <div class="row">
+        <button type="button" class="btn success" id="bCheck" ${p.costOk ? 'disabled' : ''}>${icon('check')}Verifica</button>
+        <button type="button" class="btn sm ghost" id="bHint" ${p.costOk ? 'disabled' : ''}>${icon('info', 'sm')}Suggerimento</button>
+        <button type="button" class="btn sm ghost" id="bSol" ${p.costOk ? 'disabled' : ''}>${icon('eye', 'sm')}Mostra soluzione</button>
+        <span class="spacer"></span>
+        ${p.costErr ? `<span class="pill neutral">Tentativi errati: ${p.costErr}</span>` : ''}
+      </div>
+      <div id="bOut">${p.costOk ? costruisciOkHtml(l) : ''}</div>`;
+  }
+
+  function costruisciOkHtml(l) {
+    const c = l.costruisci;
+    const codice = P.completaCostruisci(c.codice);
+    const res = JVM.run(codice, { input: c.input, files: c.files });
+    return `<div class="result-banner ok">${icon('trophy')}Codice completo! Ecco l'esecuzione nel simulatore JVM.</div>
+      ${arP('أحسنت! الكود مكتمل، وهذه نتيجة تنفيذه في محاكي JVM.')}
+      <div class="code-block" style="margin-top:10px">${consoleHtml(res, undefined, true)}</div>`;
+  }
+
+  function wireCostruisci(l) {
+    const p = prog(l.id);
+    const parti = P.analizzaCostruisci(l.costruisci.codice).filter((x) => x.risposte);
+    const inputs = $$('.blank');
+    inputs.forEach((inp) => {
+      inp.addEventListener('input', () => {
+        inp.classList.remove('ok', 'ko');
+        p.costDraft = inputs.map((x) => x.value);
+        saveProg();
+      });
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); $('#bCheck').click(); }
+      });
+    });
+    const succeed = () => {
+      p.costOk = true;
+      saveProg();
+      addXp(p.costSol ? 2 : 15, 'codice costruito');
+      renderLesson(l.id, 3);
+    };
+    $('#bCheck').addEventListener('click', () => {
+      let tutti = true;
+      inputs.forEach((inp, i) => {
+        const ok = parti[i].risposte.some((r) => normBlank(r) === normBlank(inp.value));
+        inp.classList.toggle('ok', ok);
+        inp.classList.toggle('ko', !ok);
+        if (!ok) tutti = false;
+      });
+      if (tutti) succeed();
+      else {
+        p.costErr = (p.costErr || 0) + 1;
+        saveProg();
+        const n = inputs.filter((x) => x.classList.contains('ko')).length;
+        $('#bOut').innerHTML = `<div class="result-banner ko">${icon('alert')}${n} ${n === 1 ? 'spazio non corretto' : 'spazi non corretti'}: correggi quelli in rosso.</div>${arP(`يوجد ${n} من الفراغات غير صحيح: صحّح الخانات الحمراء.`)}`;
+        const firstKo = inputs.find((x) => x.classList.contains('ko'));
+        if (firstKo) firstKo.focus();
+      }
+    });
+    $('#bHint').addEventListener('click', () => {
+      const i = inputs.findIndex((inp, k) => !parti[k].risposte.some((r) => normBlank(r) === normBlank(inp.value)));
+      if (i < 0) { toast('Tutti gli spazi sembrano corretti: premi «Verifica»'); return; }
+      const r = parti[i].risposte[0];
+      inputs[i].value = r.slice(0, Math.max(1, Math.ceil(r.length / 3)));
+      inputs[i].focus();
+      inputs[i].classList.remove('ok', 'ko');
+      toast(`Suggerimento: lo spazio ${i + 1} inizia con «${inputs[i].value}»`);
+    });
+    $('#bSol').addEventListener('click', () => {
+      p.costSol = true;
+      inputs.forEach((inp, i) => { inp.value = parti[i].risposte[0]; });
+      succeed();
+    });
+  }
+
+  // Fase 4 — Laboratorio guidato nell'editor con verifica automatica
+  function fase4Html(l) {
+    const lab = l.laboratorio;
+    const p = prog(l.id);
+    return `
+      <section class="exercise-card">
+        <div class="row"><span class="pill ok">${icon('target', 'sm')} Laboratorio</span>${p.lab ? '<span class="pill ok">✓ Superato</span>' : ''}${p.labSol ? '<span class="pill neutral">soluzione consultata</span>' : ''}</div>
+        <h2 class="h2" style="margin-top:10px">${esc(lab.titolo)}</h2>
+        <p class="it-text" style="margin:0">${rich(lab.consegna)}</p>
+        ${arP(lab.consegnaAr)}
+        ${lab.input ? `<div class="io-note">${icon('terminal', 'sm')} Input di prova (stdin): <code dir="ltr">${esc(lab.input.replace(/\n/g, '⏎ '))}</code></div>` : ''}
+        ${lab.files ? `<div class="io-note">${icon('box', 'sm')} File disponibili: ${Object.keys(lab.files).map((f) => `<code dir="ltr">${esc(f)}</code>`).join(' ')}</div>` : ''}
+        <div class="section-title" style="margin-top:14px">Verifiche automatiche</div>
+        <div class="checks">${lab.verifiche.map((v) => `<div class="check ${p.lab ? 'ok' : ''}">${icon(p.lab ? 'check' : 'target')}<div><span class="it-text">${rich(v.msg)}</span><span class="ar" dir="rtl" lang="ar">${rich(v.msgAr)}</span></div></div>`).join('')}</div>
+        <div class="row" style="margin-top:14px">
+          <button type="button" class="btn primary" id="btnLab">${icon('code')}${p.lab ? 'Riapri nel Laboratorio' : 'Apri nel Laboratorio (Editor)'}</button>
+          ${!p.lab && !p.labSkip ? `<button type="button" class="btn sm ghost" id="btnSkip">${icon('right', 'sm')}Salta (0 punti)</button>` : ''}
+        </div>
+        ${p.lab ? `<div class="result-banner ok">${icon('trophy')}Laboratorio superato: tutte le verifiche sono verdi.</div>` : p.labSkip ? `<div class="result-banner ko">${icon('alert')}Laboratorio saltato: niente punti per questa fase.</div>` : ''}
+      </section>`;
+  }
+
+  function wireLab(l) {
+    const p = prog(l.id);
+    $('#btnLab').addEventListener('click', () => {
+      editor.startExercise(l);
+      location.hash = '#/editor';
+    });
+    const sk = $('#btnSkip');
+    if (sk) sk.addEventListener('click', () => {
+      p.labSkip = true;
+      saveProg();
+      renderLesson(l.id, 4);
+    });
+  }
+
+  // Fase 5 — Riepilogo, voto in trentesimi, sblocco della lezione successiva
+  function fase5Html(l, next) {
+    const p = prog(l.id);
+    const orale = l.orale ? `
+      <section class="card">
+        <div class="section-title">${icon('mic', 'sm')} Prova orale</div>
+        ${arP('اقرأ السؤال وأجب بصوت عالٍ بالإيطالية، ثم اكشف الإجابة النموذجية وقيّم نفسك بصدق.')}
+        <div class="stack-sm">${l.orale.map((o, i) => {
+          const val = p.orale[i];
+          return `<div class="oral-q" data-o="${i}">
+            <div class="h3">${i + 1}. ${esc(o.d)}</div>
+            <div class="oral-a" ${val === undefined ? 'hidden' : ''}><p class="answer-model">${esc(o.r)}</p>${arP(o.ar)}</div>
+            <div class="row">
+              ${val === undefined ? `<button type="button" class="btn sm" data-show>${icon('eye', 'sm')}Mostra risposta</button>` : ''}
+              <button type="button" class="btn sm success ${val === true ? 'on' : ''}" data-knew="1" ${val === undefined ? 'hidden' : ''}>${icon('check', 'sm')}La sapevo</button>
+              <button type="button" class="btn sm ghost ${val === false ? 'on' : ''}" data-knew="0" ${val === undefined ? 'hidden' : ''}>${icon('x', 'sm')}Da ripassare</button>
+              <button type="button" class="btn sm ghost" data-say="${i}">${icon('volume', 'sm')}Ascolta</button>
+            </div>
+          </div>`;
+        }).join('')}</div>
+      </section>` : '';
+    const v = votoLezione(l);
+    const pronta = !l.esame || v.esame.completo;
+    const color = v.lode ? '#F2CC60' : v.voto >= VOTO_MINIMO ? '#3FB950' : '#F85149';
+    const parti = v.esame
+      ? [['Prova scritta', v.esame.scritto, 'الكتابي'], ['Prova al calcolatore', v.esame.pratica, 'العملي'], ['Prova orale', v.esame.orale, 'الشفهي']].map(([t, x, ar]) => `<li><span>${t} <small class="ar" dir="rtl" lang="ar">${ar}</small></span><b>${Math.round(x)}/30</b></li>`).join('')
+      : [['Micro-quiz', v.parti.quiz, `${v.okQ}/${v.nq} corrette`], ['Costruisci il codice', v.parti.cost, p.costSol ? 'soluzione consultata' : `${p.costErr || 0} errori`], ['Laboratorio', v.parti.lab, p.lab ? (p.labSol ? 'soluzione consultata' : 'superato') : 'non svolto']].map(([t, x, s]) => `<li><span>${t} <small>${s}</small></span><b>${Math.round(x * 10) / 10}/10</b></li>`).join('');
+    return `
+      <section class="card">
+        <div class="section-title">${icon('book', 'sm')} Riepilogo della lezione</div>
+        <ul class="riepilogo">${l.riepilogo.map((r) => `<li>${icon('check', 'sm')}<div><span class="it-text">${rich(r.it)}</span>${arP(r.ar)}</div></li>`).join('')}</ul>
+      </section>
+      ${orale}
+      <section class="card grade-card">
+        ${pronta ? `<div class="grade">
+          ${ringSvg(v.voto / 30, color, v.lode ? '30L' : String(v.voto), '/ 30', v.lode ? 'lode' : '')}
+          <div class="grade-text">
+            <h4>${l.esame ? 'Voto finale d\'esame' : 'Voto della lezione'}: ${v.lode ? '30 e Lode 🏆' : v.voto + '/30'} — ${esc(v.giudizio)}</h4>
+            <p class="ar" dir="rtl" lang="ar">التقدير: ${GIUDIZIO_AR[v.giudizio]} (${v.voto}/30)</p>
+            <ul class="breakdown">${parti}</ul>
+          </div>
+        </div>
+        ${v.voto >= VOTO_MINIMO
+          ? `<div class="result-banner ok">${icon('trophy')}${l.esame ? 'Esame superato!' : 'Lezione superata!'} ${next ? 'La lezione successiva è sbloccata.' : 'Hai completato tutto il percorso: Ingegnere Java!'}</div>`
+          : `<div class="result-banner ko">${icon('alert')}Voto insufficiente (minimo 18): ripeti le fasi con meno punti per sbloccare la lezione successiva.</div>
+             ${arP('الدرجة أقل من 18: أعد المراحل ذات النقاط الأقل لفتح الدرس التالي.')}
+             <div class="row"><button type="button" class="btn sm" id="btnRetry">${icon('refresh', 'sm')}Ripeti quiz e costruzione</button></div>`}
+        <div class="row" style="margin-top:12px">
+          ${next && v.voto >= VOTO_MINIMO ? `<a class="btn primary" href="#/lezioni/${next.id}">${icon('play')}Lezione ${next.indice}: ${esc(next.titolo)}</a>` : ''}
+          <a class="btn ghost" href="#/lezioni">${icon('tree')}Torna al percorso</a>
+        </div>` : `<div class="result-banner ko">${icon('mic')}Rispondi a tutte le domande orali per ottenere il voto finale.</div>`}
+      </section>`;
+  }
+
+  function wireRiepilogo(l, next) {
+    const p = prog(l.id);
+    $$('.oral-q').forEach((box) => {
+      const i = +box.dataset.o;
+      const sh = $('[data-show]', box);
+      if (sh) sh.addEventListener('click', () => {
+        $('.oral-a', box).hidden = false;
+        $$('[data-knew]', box).forEach((b) => { b.hidden = false; });
+        sh.remove();
+      });
+      $$('[data-knew]', box).forEach((b) => b.addEventListener('click', () => {
+        p.orale[i] = b.dataset.knew === '1';
+        saveProg();
+        renderLesson(l.id, 5);
+      }));
+      $('[data-say]', box).addEventListener('click', (e) => tts.speak([l.orale[i].d], 'it-IT', e.currentTarget));
+    });
+    const rt = $('#btnRetry');
+    if (rt) rt.addEventListener('click', () => {
+      p.quiz = {};
+      p.costOk = false; p.costErr = 0; p.costSol = false; p.costDraft = null;
+      p.fase = 2;
+      saveProg();
+      location.hash = `#/lezioni/${l.id}/2`;
+    });
+    const v = votoLezione(l);
+    const pronta = !l.esame || v.esame.completo;
+    if (pronta && v.voto >= VOTO_MINIMO && !p.superata) {
+      const rankPrima = rankAttuale().grado;
+      p.superata = true;
+      p.voto = v.voto;
+      saveProg();
+      addXp(v.lode ? 80 : 50, v.lode ? '30 e Lode!' : 'lezione superata');
+      updateRank();
+      const rankDopo = rankAttuale().grado;
+      if (rankDopo !== rankPrima) setTimeout(() => toast(`🎓 Nuovo grado: ${rankDopo}`, 'gold'), 2700);
+      $$('.step[data-fase="5"]').forEach((b) => b.classList.add('ok'));
+    } else if (pronta && p.superata && v.voto > (p.voto || 0)) {
+      p.voto = v.voto;
+      saveProg();
+    }
+    void next;
+  }
+
   // ───────────────────────── Editor Java ─────────────────────────
-  const DEFAULT_CODE = C.esempi[0].codice;
+  const DEFAULT_CODE = P.esempi[0].codice;
   const editor = {
     built: false,
     code: '',
@@ -854,6 +1204,8 @@
     lastRunCode: null,
     activeLine: null,
     exercise: null,
+    input: '',
+    files: {},
     player: null,
     lintTimer: null,
 
@@ -866,7 +1218,7 @@
             ${arP('اكتب الكود ثم اضغط «Analizza & Esegui»، أو نفّذه خطوة بخطوة لمشاهدة الـStack والـHeap. في «Vista interattiva» اضغط على أي سطر لشرحه بالعربية.')}</div>
           <select class="select" id="exSel" aria-label="Carica un esempio">
             <option value="">Carica un esempio…</option>
-            ${C.esempi.map((e) => `<option value="${e.id}">${esc(e.titolo)}</option>`).join('')}
+            ${P.esempi.map((e) => `<option value="${e.id}">${esc(e.titolo)}</option>`).join('')}
           </select>
         </div>
         <div class="editor-layout">
@@ -895,6 +1247,14 @@
               <button type="button" class="btn purple" id="btnDebug">${icon('bug')}Passo-Passo (Debug)</button>
               <button type="button" class="btn-icon" id="btnClear" title="Nuovo file" aria-label="Nuovo file">${icon('refresh')}</button>
             </div>
+            <details class="io-panel" id="ioPanel">
+              <summary>${icon('terminal', 'sm')}Input (stdin) e File <span class="muted" id="ioSummary"></span></summary>
+              <label class="io-label">Input da tastiera (una riga per ogni invio) <span class="ar" dir="rtl" lang="ar">· الإدخال الذي يقرؤه Scanner</span>
+                <textarea id="ioIn" class="io-text" rows="3" spellcheck="false" dir="ltr" placeholder="es. 20&#10;Mario Rossi&#10;27,5"></textarea></label>
+              <div class="io-label">File di testo virtuali <span class="ar" dir="rtl" lang="ar">· ملفات افتراضية يقرؤها ويكتبها البرنامج</span></div>
+              <div id="ioFiles" class="io-files"></div>
+              <button type="button" class="btn sm ghost" id="ioAdd">${icon('box', 'sm')}Aggiungi file</button>
+            </details>
           </div>
           <div class="pane card pane-out">
             <div class="debugger" id="edDbg" hidden></div>
@@ -922,10 +1282,10 @@
       this.ta.addEventListener('keydown', (e) => this.onKey(e));
       this.ta.addEventListener('click', () => this.ensureCaret());
       $('#exSel').addEventListener('change', (e) => {
-        const ex = C.esempi.find((x) => x.id === e.target.value);
+        const ex = P.esempi.find((x) => x.id === e.target.value);
         if (ex) {
           this.exercise = null;
-          this.load(ex.codice, null, null);
+          this.load(ex.codice, null, null, { input: ex.input, files: ex.files });
           toast('Esempio caricato: ' + ex.titolo.replace(/^⚠\s*/, ''));
         }
         e.target.value = '';
@@ -934,9 +1294,40 @@
       $$('.out-tabs [data-tab]', v).forEach((b) => b.addEventListener('click', () => this.tab(b.dataset.tab)));
       $('#btnRun').addEventListener('click', () => this.run(false));
       $('#btnDebug').addEventListener('click', () => this.run(true));
+      $('#ioIn').addEventListener('input', (e) => { this.input = e.target.value; this.invalidateRun(true); this.persist(); this.ioSummary(); });
+      $('#ioAdd').addEventListener('click', () => {
+        let n = 1;
+        while (this.files['dati' + (n > 1 ? n : '') + '.txt'] !== undefined) n++;
+        this.files['dati' + (n > 1 ? n : '') + '.txt'] = '';
+        this.renderIo();
+        this.persist();
+      });
+      $('#ioFiles').addEventListener('input', (e) => {
+        const box = e.target.closest('[data-file]');
+        if (!box) return;
+        const old = box.dataset.file;
+        if (e.target.matches('.io-fname')) {
+          const nome = e.target.value.trim();
+          if (!nome || (nome !== old && this.files[nome] !== undefined)) return;
+          const cont = this.files[old];
+          delete this.files[old];
+          this.files[nome] = cont;
+          box.dataset.file = nome;
+        } else this.files[old] = e.target.value;
+        this.invalidateRun(true);
+        this.persist();
+        this.ioSummary();
+      });
+      $('#ioFiles').addEventListener('click', (e) => {
+        const del = e.target.closest('[data-delfile]');
+        if (!del) return;
+        delete this.files[del.dataset.delfile];
+        this.renderIo();
+        this.persist();
+      });
       $('#btnClear').addEventListener('click', () => {
         this.exercise = null;
-        this.load('public class Main {\n\n    public static void main(String[] args) {\n        \n    }\n}\n', 'Main.java', null);
+        this.load('public class Main {\n\n    public static void main(String[] args) {\n        \n    }\n}\n', 'Main.java', null, { input: '', files: {} });
         this.ta.focus();
         this.ta.setSelectionRange(68, 68);
       });
@@ -952,11 +1343,13 @@
         if (!a) return;
         if (a.dataset.ex === 'check') this.checkExercise();
         else if (a.dataset.ex === 'sol') {
-          this.setCode(this.exercise.l.esercizio.soluzione);
+          const pr = prog(this.exercise.l.id);
+          if (!pr.lab) { pr.labSol = true; saveProg(); }
+          this.setCode(this.exercise.l.laboratorio.soluzione);
           toast('Soluzione caricata: studiala riga per riga in «Vista interattiva»');
-        } else if (a.dataset.ex === 'reset') this.setCode(this.exercise.l.esercizio.codice);
-        else if (a.dataset.ex === 'exit') { this.exercise = null; this.renderBanner(); this.updateFile(); }
-        else if (a.dataset.ex === 'back') location.hash = `#/lezioni/${this.exercise.m.id}/${this.exercise.l.id}`;
+        } else if (a.dataset.ex === 'reset') this.setCode(this.exercise.l.laboratorio.codice);
+        else if (a.dataset.ex === 'exit') { this.exercise = null; this.renderBanner(); this.updateFile(); this.persist(); }
+        else if (a.dataset.ex === 'back') location.hash = `#/lezioni/${this.exercise.l.id}/4`;
       });
       window.addEventListener('resize', () => this.syncSize());
       this.built = true;
@@ -964,9 +1357,9 @@
       if (saved && saved.code) {
         if (saved.ex) {
           const f = findLesson(saved.ex);
-          if (f) this.exercise = { m: f.m, l: f.l };
+          if (f) this.exercise = { l: f };
         }
-        this.load(saved.code, saved.file, this.exercise);
+        this.load(saved.code, saved.file, this.exercise, { input: saved.input || '', files: saved.files || {} });
       } else this.load(DEFAULT_CODE, null, null);
     },
 
@@ -978,9 +1371,14 @@
       });
     },
 
-    load(code, file, exercise) {
+    load(code, file, exercise, io) {
       if (!this.built) this.build();
       if (exercise !== undefined) this.exercise = exercise;
+      if (io) {
+        this.input = io.input || '';
+        this.files = { ...(io.files || {}) };
+      }
+      this.renderIo();
       this.file = file || this.guessFile(code);
       this.renderBanner();
       this.setCode(code);
@@ -989,11 +1387,28 @@
     },
 
     startExercise(l) {
-      const f = findLesson(l.id);
-      this.exercise = { m: f.m, l: f.l };
+      this.exercise = { l };
+      const lab = l.laboratorio;
       const draft = store.get('draft.' + l.id, null);
-      this.load(draft || l.esercizio.codice, null, this.exercise);
+      this.load(draft || lab.codice, null, this.exercise, { input: lab.input, files: lab.files });
       this.setMode('edit');
+      if (lab.input || lab.files) $('#ioPanel').open = true;
+    },
+
+    renderIo() {
+      if (!this.built) return;
+      $('#ioIn').value = this.input;
+      $('#ioFiles').innerHTML = Object.entries(this.files).map(([n, c]) => `
+        <div class="io-file" data-file="${esc(n)}">
+          <div class="row"><input class="io-fname" value="${esc(n)}" spellcheck="false" aria-label="Nome del file"><span class="spacer"></span><button type="button" class="btn-icon" data-delfile="${esc(n)}" aria-label="Elimina file">${icon('x', 'sm')}</button></div>
+          <textarea class="io-text" rows="3" spellcheck="false" dir="ltr" aria-label="Contenuto di ${esc(n)}">${esc(c)}</textarea>
+        </div>`).join('') || '<p class="muted small">Nessun file. I file scritti dal programma (PrintWriter) appaiono nella Console.</p>';
+      this.ioSummary();
+    },
+    ioSummary() {
+      const nf = Object.keys(this.files).length;
+      const nl = this.input ? this.input.replace(/\n$/, '').split('\n').length : 0;
+      $('#ioSummary').textContent = nl || nf ? `· ${nl} righe di input, ${nf} file` : '';
     },
 
     guessFile(code) {
@@ -1015,7 +1430,7 @@
     },
 
     persist() {
-      store.set('editor', { code: this.code, file: this.file, ex: this.exercise ? this.exercise.l.id : null });
+      store.set('editor', { code: this.code, file: this.file, ex: this.exercise ? this.exercise.l.id : null, input: this.input, files: this.files });
       if (this.exercise) store.set('draft.' + this.exercise.l.id, this.code);
     },
 
@@ -1128,8 +1543,8 @@
       if (this.mode === 'inspect') this.renderInspect();
     },
 
-    invalidateRun() {
-      if (this.lastRunCode !== null && this.lastRunCode !== this.code) {
+    invalidateRun(force) {
+      if (this.lastRunCode !== null && (force || this.lastRunCode !== this.code)) {
         this.lastRunCode = null;
         this.lastRes = null;
         this.player.stop();
@@ -1199,10 +1614,11 @@
     run(debug) {
       this.code = this.ta.value;
       this.lint();
-      const res = JVM.run(this.code);
+      const res = JVM.run(this.code, { input: this.input, files: this.files });
       this.lastRes = res;
       this.lastRunCode = this.code;
       this.player.load(res, !debug);
+      this.showFiles(res);
       this.renderFeedback();
       if (debug) {
         if (res.trace.length) { this.tab('memoria'); this.setMode('inspect'); toast('Debugger avviato: usa Avanti ▶ per eseguire passo per passo'); }
@@ -1275,8 +1691,14 @@
       if (hadRun) this.rerunQuiet();
     },
 
+    showFiles(res) {
+      const scritti = Object.entries(res.files || {}).filter(([n, c]) => this.files[n] !== c);
+      if (!scritti.length) return;
+      $('#edConsole').insertAdjacentHTML('beforeend', `<div class="files-out">${scritti.map(([n, c]) => `<div class="file-out"><div class="file-out-h">${icon('box', 'sm')}${esc(n)} <small>file scritto dal programma</small></div><pre>${esc(c) || '<span class="console-empty">(vuoto)</span>'}</pre></div>`).join('')}</div>`);
+    },
+
     rerunQuiet() {
-      const res = JVM.run(this.code);
+      const res = JVM.run(this.code, { input: this.input, files: this.files });
       this.lastRes = res;
       this.lastRunCode = this.code;
       this.player.load(res, true);
@@ -1302,12 +1724,13 @@
     renderBanner() {
       const b = $('#exBanner');
       if (!this.exercise) { b.hidden = true; b.innerHTML = ''; return; }
-      const { m, l } = this.exercise;
-      const ex = l.esercizio;
+      const { l } = this.exercise;
+      const ex = l.laboratorio;
+      const pr = prog(l.id);
       b.hidden = false;
       b.innerHTML = `
-        <div class="row"><span class="pill ok">${icon('target', 'sm')} Esercizio · Modulo ${m.numero}</span>${state.passed[l.id] ? '<span class="pill ok">✓ Superato</span>' : ''}<span class="spacer"></span>
-          <button type="button" class="btn sm ghost" data-ex="back">${icon('back', 'sm')}Lezione</button><button type="button" class="btn sm ghost" data-ex="exit">${icon('x', 'sm')}Esci</button></div>
+        <div class="row"><span class="pill ok">${icon('target', 'sm')} Laboratorio · Lezione ${l.indice}</span>${pr.lab ? '<span class="pill ok">✓ Superato</span>' : ''}<span class="spacer"></span>
+          <button type="button" class="btn sm ${pr.lab ? 'primary' : 'ghost'}" data-ex="back">${icon('back', 'sm')}Torna alla lezione</button><button type="button" class="btn sm ghost" data-ex="exit">${icon('x', 'sm')}Esci</button></div>
         <h3 class="h3" style="margin-top:8px">${esc(ex.titolo)}</h3>
         <p class="it-text">${rich(ex.consegna)}</p>
         ${arP(ex.consegnaAr)}
@@ -1322,7 +1745,7 @@
     checkExercise() {
       const { l } = this.exercise;
       this.code = this.ta.value;
-      const r = VER.verificaEsercizio(this.code, l.esercizio, { run: JVM.run, analizza: LINT.analizza });
+      const r = VER.verificaEsercizio(this.code, l.laboratorio, { run: JVM.run, analizza: LINT.analizza });
       this.lint();
       this.lastRes = r.esito;
       this.lastRunCode = this.code;
@@ -1331,12 +1754,16 @@
       $('#exResult').innerHTML = `
         <div class="checks">${r.risultati.map((c) => `<div class="check ${c.ok ? 'ok' : 'ko'}">${icon(c.ok ? 'check' : 'x')}<div><span class="it-text">${rich(c.msg)}</span><span class="ar" dir="rtl" lang="ar">${rich(c.msgAr)}</span></div></div>`).join('')}</div>
         <div class="result-banner ${r.superato ? 'ok' : 'ko'}">${icon(r.superato ? 'trophy' : 'alert')}${r.superato ? 'Superato ✔ — ottimo lavoro!' : 'Da rivedere: controlla i punti segnati in rosso.'}</div>`;
-      if (r.superato && !state.passed[l.id]) {
-        state.passed[l.id] = true;
-        store.set('passed', state.passed);
-        addXp(30, 'esercizio superato');
+      const pr = prog(l.id);
+      if (r.superato && !pr.lab) {
+        pr.lab = true;
+        pr.labSkip = false;
+        if (pr.fase < 5) pr.fase = 5;
+        saveProg();
+        addXp(30, 'laboratorio superato');
         this.renderBanner();
         this.checkExercise();
+        $('#exResult').insertAdjacentHTML('beforeend', `<div class="row" style="margin-top:10px"><a class="btn primary" href="#/lezioni/${l.id}/5">${icon('trophy')}Vai al Riepilogo e al voto</a></div>`);
       }
     },
   };
