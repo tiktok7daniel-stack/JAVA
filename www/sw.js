@@ -1,9 +1,14 @@
 /* CodeForge — Service worker: app shell offline (cache-first) e font in cache a runtime. */
-const VERSION = 'codeforge-v1';
+const VERSION = 'codeforge-v2';
 const SHELL = [
   './',
   './index.html',
   './css/style.css',
+  './css/fonts.css',
+  './fonts/Cairo-arabic-f8c8bb.woff2',
+  './fonts/Cairo-latin-c4b7a0.woff2',
+  './fonts/Inter-latin-1ab1ad.woff2',
+  './fonts/JetBrainsMono-latin-1cd702.woff2',
   './js/app.js',
   './js/interpreter.js',
   './js/linter.js',

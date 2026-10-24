@@ -16,6 +16,7 @@ CodeForge è un prototipo funzionante di un'app per studiare la **Programmazione
 | **Feedback del Professore** | Il linter «Buona Norma» controlla camelCase/PascalCase/UPPER_SNAKE_CASE, l'incapsulamento, `==` tra String, i confronti ridondanti con `true`/`false`, i catch vuoti o generici, le eccezioni usate per il flusso, i numeri magici, `break`/`continue` nei cicli e le graffe mancanti. Mostra il prima/dopo con **Applica Correzione** e calcola il voto in trentesimi (fino a **30 e Lode**). |
 | **Esame** | Caccia all'errore, «Cosa stampa questo codice?» (con verifica nel simulatore) e domande frequenti dell'orale con risposta modello, parole chiave e spiegazione in arabo. |
 | **Glossario** | 49 termini con ricerca, filtri (Tutti, ★ Da Ripassare, OOP, Memoria, Eccezioni, Buona Norma) e **flashcard** che si girano in 3D. |
+| **Identità e avvio** | Logo «Forge Spark» (parentesi di codice e scintilla della forgia), animazione di avvio con tracciamento del logo, esplosione di scintille, scritta animata e motto «Forgia il tuo codice. Capisci ogni riga.»; font incorporati. |
 | **Progressi** | XP, giorni consecutivi, lezioni completate ed esercizi superati, salvati in `localStorage`. |
 
 ## Avvio rapido
@@ -27,7 +28,7 @@ npm start            # equivale a: python3 -m http.server 8080 --directory www
 # poi apri http://localhost:8080
 ```
 
-L'app funziona anche offline: un service worker mette in cache tutti i file dell'app.
+L'app funziona anche offline: i font sono incorporati e un service worker mette in cache tutti i file dell'app.
 
 ## Test
 
@@ -40,23 +41,37 @@ I test coprono:
 - il simulatore (output, eccezioni, errori di compilazione, trace di Stack e Heap);
 - la coerenza del programma didattico: il codice delle lezioni compila, le soluzioni superano le verifiche e le risposte d'esame coincidono con il simulatore.
 
-## Pacchetto Android (APK) con Capacitor
+## APK Android
+
+L'APK già pronto si trova in **`dist/CodeForge.apk`** (Android 7.0+, circa 320 KB, funziona completamente offline).
+
+Per ricostruirlo non servono né Android SDK né Gradle, bastano JDK 17+ e Python 3:
 
 ```bash
-npm install
-npx cap add android
-npx cap sync android
-npx cap open android      # poi Build ▸ Build APK in Android Studio
+python3 apk/build_apk.py      # → dist/CodeForge.apk
 ```
 
-`capacitor.config.json` usa `webDir: "www"`, quindi l'app viene impacchettata così com'è.
+Lo script scarica da Maven Central `android.jar`, `dx` e `apksig`, compila il guscio nativo (`apk/src/…/MainActivity.java`: WebView a schermo intero, barre di sistema scure, sintesi vocale nativa esposta come `window.CodeForgeNative`), poi:
+- codifica `AndroidManifest.xml` e `resources.arsc` in formato binario;
+- mette `www/` negli asset;
+- allinea lo zip;
+- firma l'APK con lo schema v2 e verifica la firma.
+
+**Aggiornamenti sulla stessa app:** Android installa una nuova versione sopra la precedente (mantenendo progressi, XP ed elementi salvati) solo se il package `it.codeforge.java` e la chiave di firma sono gli stessi. Per pubblicare un aggiornamento basta:
+1. aumentare `versionCode` (e `versionName`) in `apk/version.json`;
+2. rilanciare lo script con la stessa chiave.
+
+La chiave (`apk/codeforge-release.p12`) e la sua password (`apk/keystore.properties`, oppure la variabile `CODEFORGE_KEY_PASS`) vengono create alla prima build. Sono escluse da git: conservale in un luogo sicuro, perché senza di esse non si possono firmare aggiornamenti compatibili.
+
+In alternativa si può usare Capacitor (`capacitor.config.json`, `webDir: "www"`): `npm install && npx cap add android && npx cap open android`.
 
 ## Struttura
 
 ```
 www/
   index.html               shell, navigazione, bottom sheet, icone SVG
-  css/style.css            design system dark (glass, JetBrains Mono, Cairo/IBM Plex Sans Arabic)
+  css/style.css            design system dark (glass, splash di avvio, identità di marca)
+  css/fonts.css, fonts/    Inter, JetBrains Mono e Cairo incorporati (offline)
   js/app.js                router, lezioni, editor, debugger, memoria JVM, esame, glossario
   js/interpreter.js        simulatore JVM didattico con trace passo-passo
   js/linter.js             analizzatore «Buona Norma» con correzioni automatiche e voto /30
@@ -66,6 +81,8 @@ www/
   js/data/glossary.js      glossario IT → AR
   js/data/esame.js         domande per la prova scritta e la prova orale
 tests/                     test con node:test
+apk/                       guscio Android nativo, script di build, versione
+dist/CodeForge.apk         APK firmato pronto da installare
 ```
 
 ## Limiti del simulatore

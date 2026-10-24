@@ -108,17 +108,30 @@
   const findLesson = (id) => allLessons.find((x) => x.l.id === id);
 
   // ───────────────────────── Sintesi vocale ─────────────────────────
+  // Nell'APK Android il WebView non ha speechSynthesis: si usa il ponte nativo CodeForgeNative.
+  const NATIVE = window.CodeForgeNative || null;
   const tts = {
-    ok: typeof window.speechSynthesis !== 'undefined' && typeof window.SpeechSynthesisUtterance !== 'undefined',
+    ok: !!NATIVE || (typeof window.speechSynthesis !== 'undefined' && typeof window.SpeechSynthesisUtterance !== 'undefined'),
     voices: [],
     init() {
-      if (!this.ok) return;
+      if (!this.ok || NATIVE) return;
       const load = () => { this.voices = window.speechSynthesis.getVoices(); };
       load();
       window.speechSynthesis.onvoiceschanged = load;
     },
     speak(parts, lang, btn) {
       if (!this.ok) { toast('Sintesi vocale non disponibile su questo dispositivo'); return; }
+      if (NATIVE) {
+        const text = parts.map(plain).filter((t) => t.trim()).join('. ');
+        NATIVE.stop();
+        NATIVE.speak(text, lang || 'it-IT');
+        if (btn) {
+          btn.classList.add('speaking');
+          clearTimeout(btn._ttsT);
+          btn._ttsT = setTimeout(() => btn.classList.remove('speaking'), Math.min(20000, 600 + text.length * 65));
+        }
+        return;
+      }
       const ss = window.speechSynthesis;
       ss.cancel();
       const code = (lang || 'it-IT').slice(0, 2);
@@ -137,7 +150,10 @@
         ss.speak(u);
       });
     },
-    stop() { if (this.ok) window.speechSynthesis.cancel(); },
+    stop() {
+      if (NATIVE) NATIVE.stop();
+      else if (this.ok) window.speechSynthesis.cancel();
+    },
   };
 
   // ───────────────────────── Salvati per l'esame ─────────────────────────
@@ -1592,7 +1608,27 @@
   }
 
   // ───────────────────────── Avvio ─────────────────────────
+  function initSplash() {
+    const sp = $('#splash');
+    if (!sp) return;
+    let seen = false;
+    try { seen = sessionStorage.getItem('cf.splash') === '1'; } catch (e) { seen = false; }
+    if (seen && !NATIVE) { sp.remove(); return; }
+    let done = false;
+    const hide = () => {
+      if (done) return;
+      done = true;
+      sp.classList.add('out');
+      setTimeout(() => sp.remove(), 700);
+      try { sessionStorage.setItem('cf.splash', '1'); } catch (e) { /* storage non disponibile */ }
+    };
+    sp.addEventListener('click', hide);
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    setTimeout(hide, reduce ? 400 : 3100);
+  }
+
   function init() {
+    initSplash();
     initStreak();
     tts.init();
     updateStats();

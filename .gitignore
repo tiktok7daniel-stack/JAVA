@@ -1,5 +1,11 @@
 node_modules/
-android/
-ios/
+/android/
+/ios/
+apk/.tools/
+apk/build/
+# Chiave di firma: mai nel repository
+apk/*.p12
+apk/*.jks
+apk/keystore.properties
 .DS_Store
 *.log

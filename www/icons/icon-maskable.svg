@@ -1,10 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#58A6FF"/>
-      <stop offset="1" stop-color="#A371F7"/>
-    </linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#58A6FF"/><stop offset="1" stop-color="#A371F7"/></linearGradient>
+    <linearGradient id="s" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE9A8"/><stop offset=".55" stop-color="#F2CC60"/><stop offset="1" stop-color="#FF9E57"/></linearGradient>
   </defs>
-  <rect width="512" height="512" fill="url(#g)"/>
-  <path d="M212 190l-58 66 58 66M300 190l58 66-58 66" fill="none" stroke="#070A10" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="512" height="512" fill="url(#b)"/>
+  <g transform="translate(96 96) scale(5)">
+    <path d="M22 20 10.5 32 22 44M42 20 53.5 32 42 44" fill="none" stroke="#070A10" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M32 22.5 34.6 29.4 41.5 32 34.6 34.6 32 41.5 29.4 34.6 22.5 32 29.4 29.4Z" fill="url(#s)" stroke="#070A10" stroke-width="1.6" stroke-linejoin="round"/>
+  </g>
 </svg>
