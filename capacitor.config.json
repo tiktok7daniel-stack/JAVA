@@ -1,0 +1,9 @@
+{
+  "appId": "it.codeforge.java",
+  "appName": "CodeForge",
+  "webDir": "www",
+  "backgroundColor": "#070A10",
+  "android": {
+    "allowMixedContent": false
+  }
+}

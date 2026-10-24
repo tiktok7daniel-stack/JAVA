@@ -1,0 +1,19 @@
+{
+  "name": "codeforge-java",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CodeForge: corso di Programmazione Java in italiano con spiegazioni istantanee in arabo, simulatore JVM, debugger Stack/Heap e analisi Buona Norma.",
+  "scripts": {
+    "start": "python3 -m http.server 8080 --directory www",
+    "test": "node --test tests/*.test.mjs",
+    "cap:add:android": "npx cap add android",
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/cli": "^6.1.2",
+    "@capacitor/core": "^6.1.2"
+  },
+  "license": "MIT"
+}
