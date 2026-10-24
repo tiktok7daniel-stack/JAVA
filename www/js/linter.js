@@ -461,6 +461,7 @@
     mLines.forEach((L, li) => {
       const m = /^(\s*)(?:\}\s*)?(if|for|while|else if)\s*\(/.exec(L);
       if (!m) return;
+      if (m[2] === 'while' && /^\s*\}/.test(L)) return; // coda di un do-while
       const openIdx = starts[li] + L.indexOf('(', m.index + m[1].length);
       const close = findMatching(masked, openIdx);
       if (close < 0) return;

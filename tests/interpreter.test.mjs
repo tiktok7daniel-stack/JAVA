@@ -107,7 +107,7 @@ test('String: == confronta i riferimenti, equals il contenuto', () => {
 
 test('ArrayList, printf e metodi di String', () => {
   const t = out(main('        java.util.ArrayList<String> l = new ArrayList<>();\n        l.add("a");\n        l.add("b");\n        System.out.println(l + " " + l.size());\n        System.out.printf("%.2f %d %s%n", 2.0 / 3, 42, "ok");\n        System.out.println("Ciao".toUpperCase().charAt(1));'));
-  assert.equal(t, '[a, b] 2\n0.67 42 ok\nI\n');
+  assert.equal(t, '[a, b] 2\n0,67 42 ok\nI\n', 'printf usa il Locale italiano come la JVM in Italia');
 });
 
 test('errori di compilazione con spiegazione italiana e araba', () => {

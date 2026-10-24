@@ -999,13 +999,14 @@
           break;
         }
         case 'f': {
+          // Formattazione con Locale italiano (come la JVM degli studenti in Italia): 3,14 e 1.234,50
           const p = prec !== undefined ? +prec : 6;
-          s = Number(a.v).toFixed(p);
-          if (flags.includes(',')) { const [ip, dp] = s.split('.'); s = ip.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + (dp ? ',' + dp : ''); }
+          const [ip, dp] = Number(a.v).toFixed(p).split('.');
+          s = (flags.includes(',') ? ip.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : ip) + (dp ? ',' + dp : '');
           if (flags.includes('+') && a.v >= 0) s = '+' + s;
           break;
         }
-        case 'e': case 'E': s = Number(a.v).toExponential(prec !== undefined ? +prec : 6).replace(/e([+-])(\d)$/, 'e$10$2'); if (conv === 'E') s = s.toUpperCase(); break;
+        case 'e': case 'E': s = Number(a.v).toExponential(prec !== undefined ? +prec : 6).replace(/e([+-])(\d)$/, 'e$10$2').replace('.', ','); if (conv === 'E') s = s.toUpperCase(); break;
         case 'x': case 'X': s = (a.v >>> 0).toString(16); if (conv === 'X') s = s.toUpperCase(); break;
         case 'c': s = a.t === 'char' ? String.fromCharCode(a.v) : String.fromCharCode(a.v); break;
         case 'b': case 'B': s = a.t === 'null' ? 'false' : a.t === 'boolean' ? String(a.v) : 'true'; break;
